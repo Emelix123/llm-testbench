@@ -1,0 +1,31 @@
+{
+  "id": "quickcheck",
+  "order": 10,
+  "name": "Schnellcheck",
+  "category": "Leistung & Kapazität",
+  "description": "Erreichbarkeit, Modell, Streaming, usage im Stream, cached_tokens, LiteLLM-Header, Key-Limits, Netzlatenz, Durchreichen von ignore_eos und eine Messung mit 1 Nutzer.",
+  "estimated_duration_s": 120,
+  "params": [
+    {
+      "key": "single_user_requests",
+      "label": "Anfragen mit 1 Nutzer",
+      "type": "int",
+      "default": 5,
+      "min": 1,
+      "max": 50,
+      "help": "Referenzmessung ohne Parallelität"
+    },
+    {
+      "key": "input_tokens",
+      "label": "Input-Tokens",
+      "type": "int",
+      "default": 500
+    },
+    {
+      "key": "output_tokens",
+      "label": "Output-Tokens",
+      "type": "int",
+      "default": 300
+    }
+  ]
+}

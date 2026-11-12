@@ -1,0 +1,57 @@
+{
+  "id": "concurrency",
+  "order": 20,
+  "name": "Parallelitäts-Test",
+  "category": "Leistung & Kapazität",
+  "description": "N Anfragen gleichzeitig mit langem Output, je Kontextlänge. Die echte Parallelität ist die Stelle, an der die TTFT springt bzw. wie viele Antworten gleichzeitig strömen. 429 bedeutet LiteLLM-Limit statt GPU-Limit.",
+  "estimated_duration_s": 900,
+  "params": [
+    {
+      "key": "levels",
+      "label": "Parallelität N",
+      "type": "int_list",
+      "default": [
+        8,
+        16,
+        32,
+        64,
+        128,
+        256
+      ]
+    },
+    {
+      "key": "context_lengths",
+      "label": "Kontextlängen (Input-Tokens)",
+      "type": "int_list",
+      "default": [
+        2000,
+        8000,
+        32000
+      ]
+    },
+    {
+      "key": "output_tokens",
+      "label": "Output-Tokens",
+      "type": "int",
+      "default": 1000
+    },
+    {
+      "key": "warmup",
+      "label": "Aufwärm-Anfragen",
+      "type": "int",
+      "default": 10
+    },
+    {
+      "key": "pause_s",
+      "label": "Pause zwischen Wellen (s)",
+      "type": "float",
+      "default": 3
+    },
+    {
+      "key": "seed",
+      "label": "Seed (leer = zufällig)",
+      "type": "int",
+      "default": null
+    }
+  ]
+}

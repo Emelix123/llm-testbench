@@ -1,0 +1,93 @@
+{
+  "id": "capacity_sweep",
+  "order": 30,
+  "name": "Kapazitäts-Sweep",
+  "category": "Leistung & Kapazität",
+  "description": "Geschlossene Last: feste Parallelität je Stufe (1, 2, 4, 8 …), bis der Durchsatz nicht mehr steigt; je Lastprofil. Ergebnis: Kurve Durchsatz gegen Latenz, höchste Parallelität innerhalb der Zielwerte, umgerechnet in Nutzer und € pro 1 Mio. Tokens.",
+  "estimated_duration_s": 3000,
+  "params": [
+    {
+      "key": "load_profiles",
+      "label": "Lastprofile",
+      "type": "multi",
+      "default": [
+        "chat_kurz",
+        "rag"
+      ],
+      "options": [
+        {
+          "value": "chat_kurz",
+          "label": "Chat kurz (≈500 → 300)"
+        },
+        {
+          "value": "chat_verlauf",
+          "label": "Chat mit Verlauf (2–4k → 400)"
+        },
+        {
+          "value": "rag",
+          "label": "RAG (8–16k → 500)"
+        },
+        {
+          "value": "langkontext",
+          "label": "Langkontext (32k–Max → 500)"
+        },
+        {
+          "value": "generierung",
+          "label": "Generierung (≈1k → 2.000)"
+        },
+        {
+          "value": "agent",
+          "label": "Agent (10k → 100k wachsend → 300)"
+        }
+      ]
+    },
+    {
+      "key": "stage_duration_s",
+      "label": "Dauer je Stufe (s)",
+      "type": "int",
+      "default": 180,
+      "min": 10
+    },
+    {
+      "key": "levels",
+      "label": "Stufen (Parallelität)",
+      "type": "int_list",
+      "default": [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512
+      ]
+    },
+    {
+      "key": "saturation_gain_pct",
+      "label": "Abbruch der Steigerung, wenn Durchsatz um weniger als … % steigt",
+      "type": "float",
+      "default": 5
+    },
+    {
+      "key": "flat_stages",
+      "label": "… in so vielen Stufen nacheinander",
+      "type": "int",
+      "default": 1
+    },
+    {
+      "key": "warmup",
+      "label": "Aufwärm-Anfragen",
+      "type": "int",
+      "default": 10
+    },
+    {
+      "key": "seed",
+      "label": "Seed (leer = zufällig)",
+      "type": "int",
+      "default": null
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+data/secrets.env
+data/runs/
+data/tokenizers/
+data/settings.json
+data/profiles/*
+!data/profiles/.gitkeep
