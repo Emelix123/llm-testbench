@@ -1,0 +1,19 @@
+{
+  "id": "cache_benefit",
+  "order": 60,
+  "name": "Cache-Nutzen",
+  "category": "Leistung & Kapazität",
+  "description": "Gemeinsamer System-Prompt und Chats mit wachsendem Verlauf, verglichen mit eindeutigen Prompts gleicher Länge. Ergebnis: TTFT-Ersparnis in % und Trefferquote aus cached_tokens (falls geliefert).",
+  "estimated_duration_s": 400,
+  "params": [
+    {"key": "system_tokens", "label": "Länge gemeinsamer System-Prompt", "type": "int", "default": 3000},
+    {"key": "user_tokens", "label": "Länge der Nutzerfrage", "type": "int", "default": 500},
+    {"key": "requests", "label": "Anfragen je Szenario", "type": "int", "default": 40},
+    {"key": "concurrency", "label": "Parallelität", "type": "int", "default": 4},
+    {"key": "chat_sessions", "label": "Chat-Sitzungen", "type": "int", "default": 6},
+    {"key": "chat_turns", "label": "Züge je Sitzung", "type": "int", "default": 8},
+    {"key": "turn_tokens", "label": "Zuwachs je Zug (Tokens)", "type": "int", "default": 800},
+    {"key": "output_tokens", "label": "Output-Tokens", "type": "int", "default": 50},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ]
+}

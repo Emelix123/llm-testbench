@@ -1,5 +1,9 @@
 <script>
+  import { onMount } from 'svelte'
+  import { api } from './api.js'
   let { param, value = $bindable() } = $props()
+  let profiles = $state([])
+  onMount(async () => { if (param.type === 'profile') profiles = await api.get('/api/profiles') })
   let text = $state(Array.isArray(value) ? value.join(', ') : '')
 
   function setList(t) {
@@ -21,6 +25,10 @@
       oninput={(e) => (value = e.target.value === '' ? null : Number(e.target.value))} />
   {:else if param.type === 'int_list'}
     <input value={text} oninput={(e) => setList(e.target.value)} placeholder="z. B. 8, 16, 32" />
+  {:else if param.type === 'select'}
+    <select bind:value>{#each param.options as o}<option value={o.value}>{o.label}</option>{/each}</select>
+  {:else if param.type === 'profile'}
+    <select bind:value><option value="">– getesteter Endpunkt –</option>{#each profiles as p}<option value={p.id}>{p.name} – {p.model}</option>{/each}</select>
   {:else if param.type === 'bool'}
     <input type="checkbox" bind:checked={value} />
   {:else if param.type === 'multi'}

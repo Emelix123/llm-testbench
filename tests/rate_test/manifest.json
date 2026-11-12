@@ -1,0 +1,17 @@
+{
+  "id": "rate_test",
+  "order": 40,
+  "name": "Rate-Test (offene Last)",
+  "category": "Leistung & Kapazität",
+  "description": "Feste Anfragerate mit zufälligen (Poisson) oder stoßweisen Abständen, Rate steigt stufenweise. Ergebnis: höchste Rate, bei der die Warteschlange nicht wächst und die Zielwerte halten.",
+  "estimated_duration_s": 900,
+  "params": [
+    {"key": "load_profile", "label": "Lastprofil", "type": "select", "default": "chat_kurz", "options": [{"value": "chat_kurz", "label": "Chat kurz"}, {"value": "chat_verlauf", "label": "Chat mit Verlauf"}, {"value": "rag", "label": "RAG"}, {"value": "langkontext", "label": "Langkontext"}, {"value": "generierung", "label": "Generierung"}, {"value": "agent", "label": "Agent"}]},
+    {"key": "rates", "label": "Raten (Anfragen/s)", "type": "int_list", "default": [0.5, 1, 2, 4, 8, 16, 32]},
+    {"key": "stage_duration_s", "label": "Dauer je Stufe (s)", "type": "int", "default": 120},
+    {"key": "burstiness", "label": "Gleichmäßigkeit (1 = Poisson, 0,3 = stoßweise, 5 = fast gleichmäßig)", "type": "float", "default": 1.0},
+    {"key": "stop_after_unstable", "label": "Stopp nach so vielen instabilen Stufen", "type": "int", "default": 1},
+    {"key": "warmup", "label": "Aufwärm-Anfragen", "type": "int", "default": 10},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ]
+}

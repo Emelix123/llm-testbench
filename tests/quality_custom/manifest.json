@@ -1,0 +1,12 @@
+{
+  "id": "quality_custom", "order": 300, "name": "Qualität: eigene Kundenaufgaben", "category": "Qualität",
+  "description": "Deutschsprachige Kundenaufgaben mit Musterantwort, bewertet durch ein LLM als Prüfer (Note 1–5). Verglichen wird mit einem gespeicherten Referenzlauf. Eigene Fälle: data/quality/cases.jsonl (Felder id, aufgabe, muster).",
+  "estimated_duration_s": 240,
+  "params": [
+    {"key": "cases_file", "label": "Datei mit Fällen (leer = data/quality/cases.jsonl, sonst Beispielfälle)", "type": "string", "default": ""},
+    {"key": "judge_profile", "label": "Prüfer: Endpunkt-Profil (leer = getesteter Endpunkt)", "type": "profile", "default": ""},
+    {"key": "max_tokens", "label": "max. Antwortlänge", "type": "int", "default": 600},
+    {"key": "concurrency", "label": "Parallelität", "type": "int", "default": 4},
+    {"key": "max_drop_pts", "label": "Rot ab Verschlechterung um (Punkte)", "type": "float", "default": 5}
+  ]
+}

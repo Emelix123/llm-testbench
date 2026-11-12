@@ -1,0 +1,11 @@
+{
+  "id": "quality_lmeval", "order": 330, "name": "Qualität: lm-evaluation-harness", "category": "Qualität",
+  "description": "Führt lm-evaluation-harness über local-chat-completions gegen den Endpunkt aus (z. B. GSM8K, IFEval). Über APIs nur generative Aufgaben, keine Loglikelihood-Aufgaben. Benötigt: pip install \"lm-eval[api]\".",
+  "estimated_duration_s": 900,
+  "params": [
+    {"key": "tasks", "label": "Aufgaben (Komma-getrennt)", "type": "string", "default": "gsm8k,ifeval"},
+    {"key": "limit", "label": "Beispiele je Aufgabe (leer = alle)", "type": "int", "default": 200},
+    {"key": "num_concurrent", "label": "Parallelität", "type": "int", "default": 8},
+    {"key": "max_drop_pts", "label": "Rot ab Verschlechterung um (Punkte)", "type": "float", "default": 3}
+  ]
+}

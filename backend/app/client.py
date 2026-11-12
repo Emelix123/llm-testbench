@@ -96,6 +96,11 @@ class StreamResult:
     saw_done: bool = False
     usage_in_stream: bool = False
     chunks: int = 0
+    tool_calls: list = field(default_factory=list)   # zusammengesetzt aus Stream-Deltas
+    raw_chunks: list = field(default_factory=list)   # nur mit keep_chunks
+    format_issues: list = field(default_factory=list)
+    logprobs_seen: bool = False
+    data_after_done: bool = False
 
     @property
     def ok(self) -> bool:
@@ -121,6 +126,7 @@ async def stream_chat(
     keep_text: bool = False,
     cancel_event: asyncio.Event | None = None,
     on_chunk=None,
+    keep_chunks: bool = False,
 ) -> StreamResult:
     """Sendet eine Streaming-Chat-Anfrage und misst jeden Chunk."""
     body = dict(body)
@@ -149,16 +155,26 @@ async def stream_chat(
                     if cancel_event is not None and cancel_event.is_set():
                         r.error_type = "abbruch"
                         return r
-                    if not line or not line.startswith("data:"):
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
+                        if not line.startswith((":", "event:", "id:", "retry:")) and len(r.format_issues) < 5:
+                            r.format_issues.append(f"Zeile ohne data-Präfix: {line[:80]!r}")
                         continue
                     payload = line[5:].strip()
                     if payload == "[DONE]":
                         r.saw_done = True
-                        break
+                        continue  # weiterlesen, um Daten nach [DONE] zu erkennen
+                    if r.saw_done:
+                        r.data_after_done = True
                     try:
                         obj = json.loads(payload)
                     except json.JSONDecodeError:
+                        if len(r.format_issues) < 5:
+                            r.format_issues.append(f"kein gültiges JSON: {payload[:80]!r}")
                         continue
+                    if keep_chunks and len(r.raw_chunks) < 5000:
+                        r.raw_chunks.append(obj)
                     if "error" in obj:
                         err = obj["error"]
                         code = err.get("code") if isinstance(err, dict) else None
@@ -183,6 +199,21 @@ async def stream_chat(
                                 r.reasoning_text += rc
                         if tc:
                             got_token = True
+                            for d in tc:
+                                idx = d.get("index", 0)
+                                while len(r.tool_calls) <= idx:
+                                    r.tool_calls.append({"id": None, "type": "function",
+                                                         "function": {"name": "", "arguments": ""}})
+                                cur = r.tool_calls[idx]
+                                if d.get("id"):
+                                    cur["id"] = d["id"]
+                                fn = d.get("function") or {}
+                                if fn.get("name"):
+                                    cur["function"]["name"] += fn["name"]
+                                if fn.get("arguments"):
+                                    cur["function"]["arguments"] += fn["arguments"]
+                        if ch.get("logprobs"):
+                            r.logprobs_seen = True
                         if ch.get("finish_reason"):
                             r.finish_reason = ch["finish_reason"]
                     if got_token:
@@ -257,3 +288,31 @@ async def measure_network_latency(client: httpx.AsyncClient, ep: Endpoint, n: in
     s = sorted(samples)
     return {"ok": True, "path": path_used, "p50_ms": round(s[len(s) // 2], 2),
             "min_ms": round(s[0], 2), "samples_ms": [round(x, 2) for x in samples]}
+
+
+async def chat_once(client: httpx.AsyncClient, ep: Endpoint, body: dict, timeout_s: float = 600) -> dict:
+    """Nicht-streamende Anfrage. Gibt status, json, text, headers, dauer_ms, fehler zurück."""
+    body = dict(body)
+    body.setdefault("model", ep.model)
+    body["stream"] = False
+    t = now_ns()
+    try:
+        resp = await client.post(ep.url("/v1/chat/completions"), headers=ep.headers, json=body,
+                                 timeout=timeout_s)
+        dur = (now_ns() - t) / 1e6
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        return {"status": resp.status_code, "json": data, "text": resp.text[:4000],
+                "headers": {k.lower(): v for k, v in resp.headers.items()}, "ms": dur, "error": None}
+    except httpx.HTTPError as e:
+        return {"status": None, "json": None, "text": "", "headers": {}, "ms": (now_ns() - t) / 1e6,
+                "error": f"{type(e).__name__}: {e}"[:300]}
+
+
+def message_of(res: dict) -> dict:
+    try:
+        return res["json"]["choices"][0]["message"] or {}
+    except (TypeError, KeyError, IndexError):
+        return {}

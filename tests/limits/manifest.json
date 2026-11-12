@@ -1,0 +1,8 @@
+{
+  "id": "limits", "order": 230, "name": "Grenzwerte", "category": "Stabilität & Betrieb",
+  "description": "Sehr großes max_tokens, n größer 1, komplexe JSON-Schemas, viele Bilder, leere Anfrage, Input über dem Kontext. Bestanden, wenn Limits sauber greifen (kein 5xx, kein Timeout) und der Server danach erreichbar bleibt.",
+  "estimated_duration_s": 180,
+  "params": [
+    {"key": "many_images", "label": "Anzahl Bilder (nur VL-Modelle)", "type": "int", "default": 20}
+  ]
+}

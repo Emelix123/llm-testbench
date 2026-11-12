@@ -96,6 +96,14 @@ class Live:
                 "errors": self.errors, "requests": self.requests, "client_cpu_pct": cpu.value}
 
 
+def _itl_summary(itl: list[float]) -> dict | None:
+    if not itl:
+        return None
+    s = sorted(itl)
+    return {"n": len(s), "p50": s[len(s) // 2], "p95": s[min(len(s) - 1, int(len(s) * 0.95))], "max": s[-1],
+            "sum": round(sum(s), 3)}
+
+
 # ======================================================================= Context
 
 class RunContext:
@@ -125,6 +133,7 @@ class RunContext:
         self.notes: list[str] = []
         self.extra_config: dict = {}
         self._req_seq = 0
+        self.compact_itl = False  # Dauertests: ITL je Anfrage nur zusammengefasst speichern
         self._cpu_warn = settings["client"]["cpu_warn_pct"]
 
     # ------------------------------------------------------------ Rückmeldung
@@ -160,12 +169,13 @@ class RunContext:
         return body
 
     async def send(self, body: dict, meta: dict | None = None, *, record: bool = True,
-                   keep_text: bool = False) -> StreamResult:
+                   keep_text: bool = False, keep_chunks: bool = False,
+                   cancel_event: asyncio.Event | None = None) -> StreamResult:
         meta = meta or {}
         self.live.inflight += 1
         cpu_at_send = cpu.value
         try:
-            res = await _stream_with_live(self, body, keep_text)
+            res = await _stream_with_live(self, body, keep_text, keep_chunks, cancel_event)
         finally:
             self.live.inflight -= 1
         self.live.requests += 1
@@ -183,7 +193,7 @@ class RunContext:
                 "t_first_token": res.t_first_token,
                 "t_last_token": res.t_last_token,
                 "t_end": round((now_ns() - self.t0_ns) / 1e6, 3),
-                "itl_ms": res.itl_ms,
+                **({"itl_summary": _itl_summary(res.itl_ms)} if self.compact_itl else {"itl_ms": res.itl_ms}),
                 "prompt_tokens": res.prompt_tokens,
                 "completion_tokens": res.completion_tokens,
                 "reasoning_tokens": res.reasoning_tokens,
@@ -266,17 +276,167 @@ class RunContext:
 
         await asyncio.gather(*(worker(i) for i in range(concurrency)))
 
+    async def open_load(
+        self,
+        rate_rps: float,
+        duration_s: float,
+        make_request: Callable[[int, random.Random], tuple[dict, dict]],
+        *,
+        burstiness: float = 1.0,
+        on_done: Callable[[StreamResult], None] | None = None,
+    ) -> dict:
+        """Offene Last: Anfragen mit fester Rate, unabhängig von Antworten.
+
+        Abstände sind gammaverteilt (burstiness = 1: Poisson, < 1: stoßweise, > 1: gleichmäßiger).
+        Laufende Anfragen werden nach Ablauf zu Ende gemessen.
+        """
+        rng = random.Random(self.rng.getrandbits(64))
+        tasks: set[asyncio.Task] = set()
+        sent = 0
+        start = time.monotonic()
+        next_t = start
+        theta = 1.0 / (rate_rps * burstiness)
+        while not self.cancelled:
+            next_t += rng.gammavariate(burstiness, theta)
+            if next_t - start > duration_s:
+                break
+            await asyncio.sleep(max(0.0, next_t - time.monotonic()))
+            body, meta = make_request(sent, rng)
+            sent += 1
+
+            async def one(body=body, meta=meta, lag=time.monotonic() - next_t):
+                r = await self.send(body, {**meta, "send_lag_ms": round(lag * 1000, 1)})
+                if on_done:
+                    on_done(r)
+            t = asyncio.create_task(one())
+            tasks.add(t)
+            t.add_done_callback(tasks.discard)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        return {"sent": sent, "elapsed_s": time.monotonic() - start}
+
+    async def variable_load(
+        self,
+        schedule: list[dict],
+        make_request: Callable[[int, random.Random], tuple[dict, dict]],
+        *,
+        progress_base: float = 0.0,
+        progress_span: float = 1.0,
+    ) -> None:
+        """Geschlossene Last mit wechselnder Parallelität.
+
+        schedule: [{"duration_s": 120, "concurrency": 48, "phase": "spitze"}, …]
+        Arbeiter i ist aktiv, solange i < aktuelle Parallelität. Laufende Anfragen werden
+        beim Wechsel nicht abgebrochen (wie echte Nutzer).
+        """
+        maxc = max(int(p["concurrency"]) for p in schedule) if schedule else 0
+        state = {"target": 0, "phase": None, "idx": 0}
+        total = sum(p["duration_s"] for p in schedule) or 1
+        done_ev = asyncio.Event()
+
+        async def driver():
+            elapsed = 0.0
+            for i, ph in enumerate(schedule):
+                state.update(target=int(ph["concurrency"]), phase=ph.get("phase", str(i)), idx=i)
+                self.stage({"phase": state["phase"], "concurrency": state["target"], "event": "start"})
+                end = time.monotonic() + ph["duration_s"]
+                while time.monotonic() < end and not self.cancelled:
+                    await asyncio.sleep(min(1.0, max(0.0, end - time.monotonic())))
+                    frac = (elapsed + ph["duration_s"] - (end - time.monotonic())) / total
+                    self.progress(progress_base + progress_span * frac,
+                                  f"{state['phase']}: {state['target']} parallel")
+                elapsed += ph["duration_s"]
+                if self.cancelled:
+                    break
+            done_ev.set()
+
+        async def worker(i: int):
+            wrng = random.Random(self.rng.getrandbits(64))
+            while not done_ev.is_set() and not self.cancelled:
+                if i >= state["target"]:
+                    await asyncio.sleep(0.2)
+                    continue
+                body, meta = make_request(i, wrng)
+                await self.send(body, {**meta, "phase": state["phase"], "concurrency": state["target"],
+                                       "worker": i})
+
+        await asyncio.gather(driver(), *(worker(i) for i in range(maxc)))
+
+    async def once(self, body: dict, meta: dict | None = None, record: bool = False) -> dict:
+        """Nicht-streamende Anfrage (für Funktionsprüfungen)."""
+        from .client import chat_once
+        self.live.inflight += 1
+        try:
+            res = await chat_once(self.client, self.ep, body, timeout_s=self.timeout_s)
+        finally:
+            self.live.inflight -= 1
+        self.live.requests += 1
+        if res["status"] != 200:
+            self.live.errors += 1
+        if record:
+            self._req_seq += 1
+            u = (res.get("json") or {}).get("usage") or {}
+            self.writer.write({"seq": self._req_seq, **(meta or {}), "stream": False,
+                               "e2e_ms": round(res["ms"], 1), "status": res["status"],
+                               "error_type": None if res["status"] == 200 else
+                               (res["error"] and "verbindung") or f"http_{res['status']}",
+                               "prompt_tokens": u.get("prompt_tokens"),
+                               "completion_tokens": u.get("completion_tokens")})
+        return res
+
+    def measured_capacity(self, load_profile: str | None = None) -> dict | None:
+        """Höchste Parallelität innerhalb der Zielwerte aus dem letzten Kapazitäts-Sweep dieses Endpunkts."""
+        for r in storage.list_runs():
+            if r.get("test") != "capacity_sweep" or r.get("profile_id") != self.profile.get("id"):
+                continue
+            summ = storage.read_json(storage.RUNS / r["id"] / "summary.json", {})
+            profs = summ.get("profiles") or {}
+            cands = [(k, v) for k, v in profs.items() if v.get("best")]
+            if load_profile:
+                cands = [(k, v) for k, v in cands if k == load_profile]
+            if cands:
+                k, v = cands[0]
+                return {"run_id": r["id"], "load_profile": k, "concurrency": v["best"]["concurrency"],
+                        "output_tps": v["best"]["output_tps"]}
+        return None
+
+    def capacity_or_param(self, load_profile: str, param_value) -> int:
+        if param_value:
+            return int(param_value)
+        cap = self.measured_capacity(load_profile) or self.measured_capacity()
+        if cap:
+            self.note(f"Kapazität aus Lauf {cap['run_id']}: {cap['concurrency']} parallel "
+                      f"(Lastprofil {cap['load_profile']}).")
+            self.extra_config["capacity_source"] = cap
+            return int(cap["concurrency"])
+        self.note("Kein Kapazitäts-Sweep für diesen Endpunkt gefunden – angenommen werden 16 parallel. "
+                  "Besser zuerst den Kapazitäts-Sweep laufen lassen oder die Kapazität als Parameter setzen.")
+        return 16
+
     async def close(self) -> None:
         self.writer.close()
         self.progress_writer.close()
         await self.client.aclose()
 
 
-async def _stream_with_live(ctx: RunContext, body: dict, keep_text: bool) -> StreamResult:
+async def _stream_with_live(ctx: RunContext, body: dict, keep_text: bool, keep_chunks: bool = False,
+                            cancel_event: asyncio.Event | None = None) -> StreamResult:
     from . import client as client_mod
+    ev = ctx.cancel
+    if cancel_event is not None:
+        # Zusätzliches Abbruch-Signal (z. B. Abbruch-Test): beide Ereignisse beachten.
+        ev = _AnyEvent(ctx.cancel, cancel_event)
     return await client_mod.stream_chat(ctx.client, ctx.ep, body, ctx.t0_ns, timeout_s=ctx.timeout_s,
-                                        keep_text=keep_text, cancel_event=ctx.cancel,
-                                        on_chunk=ctx.live.chunk)
+                                        keep_text=keep_text, cancel_event=ev,
+                                        on_chunk=ctx.live.chunk, keep_chunks=keep_chunks)
+
+
+class _AnyEvent:
+    def __init__(self, *evs):
+        self._evs = evs
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self._evs)
 
 
 # ======================================================================= Batch
@@ -297,6 +457,8 @@ class Batch:
         self._subs: set[asyncio.Queue] = set()
         self.task: asyncio.Task | None = None
         self.inhibitor = SleepInhibitor()
+        self.make_report = False
+        self.report: dict | None = None
 
     # ------------------------------------------------------------ Events
     def subscribe(self) -> asyncio.Queue:
@@ -327,7 +489,7 @@ class Batch:
             "batch_id": self.id, "state": self.state, "label": self.label,
             "profile": {"id": self.profile["id"], "name": self.profile.get("name")},
             "started_at": self.started_at, "finished_at": self.finished_at,
-            "runs": self.runs, "live": self.live.snapshot(),
+            "runs": self.runs, "live": self.live.snapshot(), "report": self.report,
         }
 
     # ------------------------------------------------------------ Ablauf
@@ -348,6 +510,8 @@ class Batch:
                     continue
                 await self._run_one(self.modules[item["test"]], item.get("params") or {}, run, method)
             self.state = "abgebrochen" if self.cancel_event.is_set() else "fertig"
+            if self.label == "abnahme" or self.make_report:
+                await self._report()
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
             self.state = "fehler"
@@ -357,6 +521,24 @@ class Batch:
             self.inhibitor.release()
             self.finished_at = datetime.now().isoformat(timespec="seconds")
             self.emit("batch", self.snapshot())
+
+    async def _report(self) -> None:
+        from .report import write_report
+        ids = [r["run_id"] for r in self.runs if r.get("run_id")]
+        if not ids:
+            return
+        self.emit("log", {"msg": "Erzeuge Prüfbericht (HTML und PDF) …"})
+        try:
+            rep = batch_report(ids)
+            self.report = await write_report(rep, storage.DATA / "reports" / self.id,
+                                             title=f"Prüfbericht – {self.profile.get('name')}")
+            msg = f"Prüfbericht gespeichert: {self.report['html']}"
+            if self.report.get("pdf_error"):
+                msg += f" (PDF: {self.report['pdf_error']})"
+            self.emit("log", {"msg": msg})
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            self.emit("log", {"msg": f"Prüfbericht fehlgeschlagen: {e}"})
 
     async def _tick(self) -> None:
         while True:
@@ -382,7 +564,7 @@ class Batch:
         fingerprint = await endpoint_fingerprint(ctx)
         cfg = {
             "test": mod.id, "test_name": mod.manifest.get("name"), "category": mod.manifest.get("category"),
-            "batch_id": self.id, "batch_label": self.label, "batch_index": run["index"],
+            "run_id": run["run_id"], "batch_id": self.id, "batch_label": self.label, "batch_index": run["index"],
             "params": params, "seed": ctx.seed, "tool_version": storage.TOOL_VERSION,
             "profile": {k: v for k, v in self.profile.items() if k != "has_key"},
             "started_at": datetime.now().isoformat(timespec="seconds"),
@@ -437,12 +619,26 @@ async def endpoint_fingerprint(ctx: RunContext) -> dict:
 # ======================================================================= Auswertung
 
 _modules_cache: dict[str, TestModule] | None = None
+_modules_stamp: tuple | None = None
+
+
+def _stamp() -> tuple:
+    out = []
+    for d in sorted(TESTS_DIR.iterdir()):
+        for f in ("manifest.json", "test.py"):
+            p = d / f
+            if p.exists():
+                out.append((str(p), p.stat().st_mtime_ns))
+    return tuple(out)
 
 
 def modules() -> dict[str, TestModule]:
-    global _modules_cache
-    if _modules_cache is None:
+    """Testmodule; neue oder geänderte Ordner unter tests/ werden ohne Neustart geladen."""
+    global _modules_cache, _modules_stamp
+    st = _stamp()
+    if _modules_cache is None or st != _modules_stamp:
         _modules_cache = load_modules()
+        _modules_stamp = st
     return _modules_cache
 
 
@@ -475,7 +671,8 @@ def get_summary(rd: Path, fresh: bool = False) -> dict:
     sp = rd / "summary.json"
     if not fresh and sp.exists():
         s = storage.read_json(sp, {})
-        newer_settings = storage.SETTINGS.exists() and storage.SETTINGS.stat().st_mtime > sp.stat().st_mtime
+        newer_settings = any(f.exists() and f.stat().st_mtime > sp.stat().st_mtime
+                             for f in (storage.SETTINGS, storage.REFERENCES))
         if s.get("tool_version") == storage.TOOL_VERSION and not newer_settings:
             return s
     return summarize_run(rd)
@@ -492,9 +689,13 @@ def batch_report(run_ids: list[str]) -> dict:
         cfg = storage.read_json(rd / "config.json", {})
         s = get_summary(rd)
         for r in storage.iter_requests(rd):
+            if r.get("expected_error"):
+                continue  # absichtlich provozierte Ablehnungen (Grenzwerte, Kontextgrenze) sind keine Fehler
             total += 1
             failed += 0 if stats.is_ok(r) else 1
         k = s.get("kpis") or {}
+        if k.get("eur_split"):
+            kpi["eur_split"] = k["eur_split"]
         for key in ("real_parallelism", "max_users", "eur_per_m"):
             if k.get(key) is not None:
                 cur = kpi[key]
@@ -527,7 +728,7 @@ class Manager:
     def __init__(self) -> None:
         self.current: Batch | None = None
 
-    def start(self, profile: dict, items: list[dict], label: str = "") -> Batch:
+    def start(self, profile: dict, items: list[dict], label: str = "", make_report: bool = False) -> Batch:
         if self.current and self.current.state == "laeuft":
             raise RuntimeError("Es läuft bereits ein Test.")
         mods = modules()
@@ -535,6 +736,7 @@ class Manager:
             if it["test"] not in mods:
                 raise ValueError(f"Unbekannter Test: {it['test']}")
         b = Batch(profile, items, mods, label)
+        b.make_report = make_report
         self.current = b
         b.task = asyncio.create_task(b.execute())
         return b

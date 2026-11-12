@@ -22,7 +22,7 @@ SECRETS = DATA / "secrets.env"
 SETTINGS = DATA / "settings.json"
 TOKENIZER_CACHE = DATA / "tokenizers"
 
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "1.0.0"
 
 for d in (DATA, PROFILES, SUITES, RUNS, TOKENIZER_CACHE):
     d.mkdir(parents=True, exist_ok=True)
@@ -265,3 +265,22 @@ class JsonlWriter:
             self._f.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------- Referenzläufe (Qualität)
+
+REFERENCES = DATA / "references.json"
+
+
+def get_references() -> dict:
+    return read_json(REFERENCES, {})
+
+
+def set_reference(test: str, run_id: str | None) -> dict:
+    refs = get_references()
+    if run_id:
+        refs[test] = run_id
+    else:
+        refs.pop(test, None)
+    write_json(REFERENCES, refs)
+    return refs

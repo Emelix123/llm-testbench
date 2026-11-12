@@ -1,0 +1,12 @@
+{
+  "id": "endurance", "order": 200, "name": "Dauerlast", "category": "Stabilität & Betrieb",
+  "description": "1–4 h bei 75 % der gemessenen Kapazität. Ergebnis: Drift von TTFT und Tokens/s pro Stunde und Fehlerquote; sinkende Tokens/s deuten auf Hitze oder Drosselung.",
+  "estimated_duration_s": 3600,
+  "params": [
+    {"key": "duration_h", "label": "Dauer (h)", "type": "float", "default": 1, "min": 0.05, "max": 4},
+    {"key": "load_pct", "label": "Last (% der Kapazität)", "type": "int", "default": 75},
+    {"key": "capacity", "label": "Kapazität (parallel, leer = aus letztem Kapazitäts-Sweep)", "type": "int", "default": null}, {"key": "load_profile", "label": "Lastprofil", "type": "select", "default": "chat_kurz", "options": [{"value": "chat_kurz", "label": "Chat kurz"}, {"value": "chat_verlauf", "label": "Chat mit Verlauf"}, {"value": "rag", "label": "RAG"}, {"value": "langkontext", "label": "Langkontext"}, {"value": "generierung", "label": "Generierung"}, {"value": "agent", "label": "Agent"}]},
+    {"key": "window_min", "label": "Auswertungsfenster (min)", "type": "float", "default": 5},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ]
+}

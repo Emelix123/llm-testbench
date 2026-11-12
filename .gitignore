@@ -8,3 +8,7 @@ data/tokenizers/
 data/settings.json
 data/profiles/*
 !data/profiles/.gitkeep
+data/references.json
+data/reports/
+data/datasets/
+data/quality/

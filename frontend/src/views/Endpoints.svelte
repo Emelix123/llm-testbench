@@ -2,7 +2,8 @@
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   let profiles = $state([]), form = $state(null), error = $state(''), checks = $state({}), busy = $state({})
-  const empty = () => ({ name: '', base_url: 'http://localhost:4000', model: '', tokenizer: '', api_key: '', api_key_name: '', max_context: 32768 })
+  const empty = () => ({ name: '', base_url: 'http://localhost:4000', model: '', tokenizer: '', api_key: '', api_key_name: '', max_context: 32768, capabilities: {} })
+  function edit(p) { form = { ...p, api_key: '', capabilities: { ...(p.capabilities || {}) } } }
   async function load() { profiles = await api.get('/api/profiles') }
   onMount(load)
   async function save() {
@@ -30,6 +31,10 @@
       <label class="field"><span>Max. Kontext (Tokens)</span><input type="number" bind:value={form.max_context} /></label>
       <label class="field"><span>API-Key {form.id ? '(leer = unverändert)' : ''}</span><input type="password" bind:value={form.api_key} autocomplete="off" /></label>
     </div>
+    <div class="row">
+      <label class="row"><input type="checkbox" bind:checked={form.capabilities.vision} /> Vision-Modell (Bilder)</label>
+      <label class="row"><input type="checkbox" bind:checked={form.capabilities.reasoning} /> Reasoning-Modell (Denk-Teil)</label>
+    </div>
     <p class="small muted">Der Key wird nur in <code>data/secrets.env</code> gespeichert, unter dem Namen {form.api_key_name || '…_API_KEY'} – nie in Ergebnissen oder Exporten.</p>
     {#if error}<p class="err">{error}</p>{/if}
     <div class="row"><button class="primary" onclick={save}>Speichern</button><button onclick={() => (form = null)}>Abbrechen</button></div>
@@ -41,10 +46,10 @@
     <div class="row">
       <div class="grow">
         <h3>{p.name}</h3>
-        <div class="small muted">{p.base_url} · {p.model} · Tokenizer: {p.tokenizer || '– (Schätzung)'} · max. {p.max_context ?? '?'} Tokens · Key: {p.has_key ? 'hinterlegt' : 'fehlt'}</div>
+        <div class="small muted">{p.base_url} · {p.model} · Tokenizer: {p.tokenizer || '– (Schätzung)'} · max. {p.max_context ?? '?'} Tokens{p.capabilities?.vision ? ' · Vision' : ''}{p.capabilities?.reasoning ? ' · Reasoning' : ''} · Key: {p.has_key ? 'hinterlegt' : 'fehlt'}</div>
       </div>
       <button onclick={() => check(p)} disabled={busy[p.id]}>{busy[p.id] ? 'Prüfe …' : 'Verbindung prüfen'}</button>
-      <button onclick={() => (form = { ...p, api_key: '' })}>Bearbeiten</button>
+      <button onclick={() => edit(p)}>Bearbeiten</button>
       <button class="danger" onclick={() => del(p)}>Löschen</button>
     </div>
     {#if checks[p.id]}

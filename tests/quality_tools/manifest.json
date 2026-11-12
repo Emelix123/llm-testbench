@@ -1,0 +1,9 @@
+{
+  "id": "quality_tools", "order": 320, "name": "Qualität: Tool Calling (BFCL-Stil)", "category": "Qualität",
+  "description": "Kleiner Satz Tool-Calling-Aufgaben nach dem Muster der BFCL-Kategorien (simple, multiple, parallel, parallel-multiple, irrelevance), geprüft per AST-Vergleich der Argumente. Für die volle BFCL siehe README.",
+  "estimated_duration_s": 60,
+  "params": [
+    {"key": "repeats", "label": "Wiederholungen je Fall", "type": "int", "default": 2},
+    {"key": "max_drop_pts", "label": "Rot ab Verschlechterung um (Punkte)", "type": "float", "default": 5}
+  ]
+}

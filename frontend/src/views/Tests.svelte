@@ -8,7 +8,7 @@
 
   let tests = $state([]), suites = $state([]), profiles = $state([])
   let profileId = $state(''), selected = $state({}), params = $state({}), expanded = $state({})
-  let estimate = $state(null), error = $state(''), suiteName = $state('')
+  let estimate = $state(null), error = $state(''), suiteName = $state(''), suite = $state(null), makeReport = $state(false)
 
   onMount(async () => {
     ;[tests, suites, profiles] = await Promise.all([api.get('/api/tests'), api.get('/api/suites'), api.get('/api/profiles')])
@@ -30,6 +30,8 @@
 
   function applySuite(id) {
     const s = suites.find((x) => x.id === id)
+    suite = s || null
+    makeReport = !!s?.report
     if (!s) return
     selected = {}
     for (const it of s.items) {
@@ -42,7 +44,7 @@
     error = ''
     localStorage.setItem('profile', profileId)
     try {
-      await api.post('/api/batch', { profile_id: profileId, items })
+      await api.post('/api/batch', { profile_id: profileId, items, label: suite?.id || '', make_report: makeReport })
       live.log = []
       connect()
       location.hash = '#/live'
@@ -66,7 +68,7 @@
       </select>
     </label>
     <label class="field"><span>2. Suite übernehmen (optional)</span>
-      <select onchange={(e) => applySuite(e.target.value)}>
+      <select value={suite?.id || ''} onchange={(e) => applySuite(e.target.value)}>
         <option value="">– einzelne Tests wählen –</option>
         {#each suites as s}<option value={s.id}>{s.name}{s.duration ? ` (${s.duration})` : ''}</option>{/each}
       </select>
@@ -101,6 +103,7 @@
 <div class="panel startbar">
   <div class="grow">
     <div>3. Geschätzte Gesamtdauer: <b>{estimate ? dur(estimate.total_s) : '–'}</b></div>
+    <label class="row small"><input type="checkbox" bind:checked={makeReport} /> am Ende Prüfbericht (HTML + PDF) erzeugen</label>
     {#if estimate}<div class="small muted">{estimate.items.map((i) => `${tests.find((t) => t.id === i.test)?.name}: ${dur(i.seconds)}`).join(' · ')}</div>{/if}
     {#if error}<div class="err">{error}</div>{/if}
   </div>

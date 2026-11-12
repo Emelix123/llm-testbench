@@ -1,0 +1,11 @@
+{
+  "id": "quality_consistency", "order": 310, "name": "Qualität: Konsistenz unter Last", "category": "Qualität",
+  "description": "Gleiche Fragen mit temperature 0 einzeln und bei 64 parallelen Anfragen. Die Antworten sollten gleich bleiben – Abweichungen deuten auf numerische Effekte durch Batching hin.",
+  "estimated_duration_s": 180,
+  "params": [
+    {"key": "questions", "label": "Anzahl Fragen", "type": "int", "default": 32},
+    {"key": "load_concurrency", "label": "Parallelität unter Last", "type": "int", "default": 64},
+    {"key": "max_tokens", "label": "max. Antwortlänge", "type": "int", "default": 150},
+    {"key": "max_drop_pts", "label": "Rot ab Verschlechterung um (Punkte)", "type": "float", "default": 10}
+  ]
+}

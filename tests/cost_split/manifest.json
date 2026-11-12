@@ -1,0 +1,16 @@
+{
+  "id": "cost_split",
+  "order": 70,
+  "name": "Kosten je Token-Art",
+  "category": "Leistung & Kapazität",
+  "description": "Misst Input-Durchsatz (Prefill, max_tokens = 1) und Output-Durchsatz (Decode, kurzer Input, langer Output) unter Volllast. Ergebnis: € pro 1 Mio. Input-, Output- und Cache-Tokens und ein Mischpreis je Lastprofil.",
+  "estimated_duration_s": 330,
+  "params": [
+    {"key": "prefill_input_tokens", "label": "Prefill: Input-Tokens", "type": "int", "default": 4000},
+    {"key": "prefill_concurrency", "label": "Prefill: Parallelität", "type": "int", "default": 32},
+    {"key": "decode_output_tokens", "label": "Decode: Output-Tokens", "type": "int", "default": 1000},
+    {"key": "decode_concurrency", "label": "Decode: Parallelität (leer = aus Kapazitäts-Sweep)", "type": "int", "default": null},
+    {"key": "stage_duration_s", "label": "Dauer je Messung (s)", "type": "int", "default": 120},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ]
+}

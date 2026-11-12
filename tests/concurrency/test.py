@@ -58,31 +58,6 @@ async def run(ctx):
 
 # ------------------------------------------------------------------ Auswertung
 
-def sustained_overlap(intervals, min_ms=1000.0):
-    """Höchste Zahl gleichzeitig strömender Antworten, die mindestens min_ms lang gehalten wurde."""
-    ev = []
-    for a, b in intervals:
-        if a is None or b is None or b <= a:
-            continue
-        ev += [(a, 1), (b, -1)]
-    if not ev:
-        return 0
-    ev.sort(key=lambda x: (x[0], x[1]))
-    held = {}
-    cur, last_t = 0, ev[0][0]
-    for t, d in ev:
-        if cur > 0:
-            held[cur] = held.get(cur, 0) + (t - last_t)
-        cur += d
-        last_t = t
-    best = 0
-    for k in sorted(held):
-        # Zeit, in der mindestens k gleichzeitig liefen
-        if sum(v for kk, v in held.items() if kk >= k) >= min_ms:
-            best = k
-    return best
-
-
 def ttft_jump(recs):
     """Sucht den Sprung in der sortierten TTFT-Verteilung. Gibt Anzahl vor dem Sprung oder None zurück."""
     ok = [r for r in recs if stats.is_ok(r) and r.get("t_first_token") is not None]
@@ -118,7 +93,7 @@ def summarize(recs, stages, cfg, settings):
         for n in levels:
             rs = by[f"{c}:{n}"]
             agg = stats.aggregate(rs, slo)
-            ov = sustained_overlap([(r.get("t_first_token"), r.get("t_last_token")) for r in rs if stats.is_ok(r)])
+            ov = stats.sustained_overlap([(r.get("t_first_token"), r.get("t_last_token")) for r in rs if stats.is_ok(r)])
             jump = ttft_jump(rs)
             n429 = agg["errors"].get("429", 0)
             any_429 += n429

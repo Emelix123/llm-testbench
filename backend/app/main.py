@@ -109,8 +109,19 @@ BUILTIN_SUITES = [
     {"id": "schnellcheck", "name": "Schnellcheck", "duration": "ca. 2–5 min",
      "items": [{"test": "quickcheck"}], "builtin": True},
     {"id": "parallelitaet-kapazitaet", "name": "Parallelität & Kapazität", "duration": "ca. 1 h",
-     "items": [{"test": "concurrency"}, {"test": "capacity_sweep"}], "builtin": True,
-     "note": "Kontextlängen-Matrix folgt in Phase 2."},
+     "items": [{"test": "concurrency"}, {"test": "capacity_sweep"}, {"test": "context_matrix"}], "builtin": True},
+    {"id": "konfiguration", "name": "Konfiguration", "duration": "ca. 10 min",
+     "items": [{"test": "config"}], "builtin": True},
+    {"id": "dauerlast", "name": "Dauerlast", "duration": "1–4 h",
+     "items": [{"test": "endurance"}, {"test": "spike"}, {"test": "overload"}], "builtin": True,
+     "note": "Nutzt die Kapazität aus dem letzten Kapazitäts-Sweep dieses Endpunkts."},
+    {"id": "abnahme", "name": "Abnahme", "duration": "mehrere Stunden",
+     "items": [{"test": "quickcheck"}, {"test": "config"}, {"test": "concurrency"}, {"test": "capacity_sweep"},
+               {"test": "rate_test"}, {"test": "context_matrix"}, {"test": "cache_benefit"}, {"test": "cost_split"},
+               {"test": "limits"}, {"test": "cold_start"}, {"test": "endurance"}, {"test": "spike"}, {"test": "overload"},
+               {"test": "quality_custom"}, {"test": "quality_consistency"}, {"test": "quality_tools"}],
+     "builtin": True, "report": True,
+     "note": "Erzeugt am Ende einen Prüfbericht als HTML und PDF (data/reports/). lm-eval und LongBench v2 bei Bedarf dazunehmen."},
 ]
 
 
@@ -175,7 +186,7 @@ async def start_batch(req: Request):
     if not items:
         _err(400, "Bitte mindestens einen Test wählen.")
     try:
-        b = manager.start(prof, items, data.get("label") or "")
+        b = manager.start(prof, items, data.get("label") or "", bool(data.get("make_report")))
     except (RuntimeError, ValueError) as e:
         _err(409, str(e))
     return b.snapshot()
@@ -288,6 +299,51 @@ def export_run(run_id: str):
     buf.seek(0)
     return StreamingResponse(buf, media_type="application/zip",
                              headers={"Content-Disposition": f'attachment; filename="{rd.name}.zip"'})
+
+
+@app.get("/api/references")
+def get_refs():
+    return storage.get_references()
+
+
+@app.put("/api/references/{test}")
+async def put_ref(test: str, req: Request):
+    data = await req.json()
+    return storage.set_reference(test, data.get("run_id"))
+
+
+def _report_ids(runs: str) -> list[str]:
+    ids = [r for r in runs.split(",") if r]
+    for r in ids:
+        try:
+            storage.run_dir(r)
+        except FileNotFoundError:
+            _err(404, f"Lauf nicht gefunden: {r}")
+    return ids
+
+
+@app.get("/api/report/html")
+def report_html(runs: str):
+    from fastapi.responses import HTMLResponse
+    from .report import render_html
+    rep = batch_report(_report_ids(runs))
+    name = ((rep["cards"][0]["config"].get("profile") or {}).get("name") if rep["cards"] else "") or ""
+    return HTMLResponse(render_html(rep, f"Prüfbericht – {name}"),
+                        headers={"Content-Disposition": 'inline; filename="pruefbericht.html"'})
+
+
+@app.get("/api/report/pdf")
+async def report_pdf(runs: str):
+    import hashlib
+    from .report import write_report
+    ids = _report_ids(runs)
+    rep = batch_report(ids)
+    name = ((rep["cards"][0]["config"].get("profile") or {}).get("name") if rep["cards"] else "") or ""
+    out = storage.DATA / "reports" / ("manuell-" + hashlib.sha1(runs.encode()).hexdigest()[:10])
+    res = await write_report(rep, out, f"Prüfbericht – {name}")
+    if not res["pdf"]:
+        _err(501, res["pdf_error"] or "PDF nicht erzeugbar")
+    return FileResponse(res["pdf"], media_type="application/pdf", filename="pruefbericht.pdf")
 
 
 # ---------------------------------------------------------------- Einstellungen

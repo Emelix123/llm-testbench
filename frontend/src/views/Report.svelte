@@ -3,12 +3,30 @@
   import { api, num, dt } from '../lib/api.js'
   import Light from '../lib/Light.svelte'
   import Chart from '../lib/Chart.svelte'
+  import CostCalc from '../lib/CostCalc.svelte'
   let { query } = $props()
-  let rep = $state(null), error = $state(''), open = $state({})
+  let rep = $state(null), error = $state(''), open = $state({}), refs = $state({}), pdfBusy = $state(false)
 
   onMount(async () => {
-    try { rep = await api.get('/api/report?runs=' + encodeURIComponent(query.runs || '')) } catch (e) { error = e.message }
+    try {
+      ;[rep, refs] = await Promise.all([api.get('/api/report?runs=' + encodeURIComponent(query.runs || '')), api.get('/api/references')])
+    } catch (e) { error = e.message }
   })
+  async function setRef(c, on) {
+    refs = await api.put('/api/references/' + c.test, { run_id: on ? c.run_id : null })
+    rep = await api.get('/api/report?runs=' + encodeURIComponent(query.runs || ''))
+  }
+  async function pdf() {
+    pdfBusy = true; error = ''
+    try {
+      const r = await fetch('/api/report/pdf?runs=' + encodeURIComponent(query.runs || ''))
+      if (!r.ok) throw new Error((await r.json()).detail)
+      const url = URL.createObjectURL(await r.blob())
+      const a = Object.assign(document.createElement('a'), { href: url, download: 'pruefbericht.pdf' })
+      a.click(); URL.revokeObjectURL(url)
+    } catch (e) { error = 'PDF: ' + e.message }
+    pdfBusy = false
+  }
   const k = $derived(rep?.kpis || {})
   const tl = $derived(rep?.traffic_light)
   const first = $derived(rep?.cards?.[0]?.config)
@@ -19,6 +37,11 @@
   <div class="row">
     <h1 class="grow">Ergebnis</h1>
     <span class="muted small">{first?.profile?.name} · {first?.profile?.model} · {dt(first?.started_at)}</span>
+  </div>
+  <div class="row" style="margin-bottom:.8rem">
+    <a class="btn" href={'/api/report/html?runs=' + encodeURIComponent(query.runs || '')} target="_blank">Prüfbericht (HTML)</a>
+    <button onclick={pdf} disabled={pdfBusy}>{pdfBusy ? 'PDF wird erzeugt …' : 'Prüfbericht (PDF)'}</button>
+    <a class="btn" href={'#/vergleich?a=' + (rep.cards[0]?.run_id || '')}>Mit anderem Lauf vergleichen</a>
   </div>
 
   <div class="kpis">
@@ -37,6 +60,7 @@
       <span>€ pro 1 Mio. Tokens</span>
       <b>{k.eur_per_m ? num(k.eur_per_m.value, 2) + ' €' : '–'}</b>
       <small>{k.eur_per_m ? k.eur_per_m.unit : 'aus dem Kapazitäts-Sweep'}</small>
+      {#if k.eur_split}<small class="muted">Input {num(k.eur_split.input, 3)} € · Output {num(k.eur_split.output, 2)} € · Cache {num(k.eur_split.cache, 3)} €</small>{/if}
     </div>
     <div class="panel kpi">
       <span>Fehlerquote</span>
@@ -47,6 +71,8 @@
   {#if k.max_users || k.eur_per_m}
     <p class="small muted">{k.max_users?.text}<br />{k.eur_per_m?.text}</p>
   {/if}
+
+  <CostCalc cards={rep.cards} settings={rep.settings} />
 
   {#each rep.cards as c}
     <div class="panel card">
@@ -81,7 +107,14 @@
             <tr><td>Modelle laut /v1/models</td><td>{c.config.endpoint_fingerprint?.models?.join(', ') ?? '–'}</td></tr>
             <tr><td>Ruhezustand verhindert</td><td>{c.config.client?.sleep_inhibit ?? 'nein'}</td></tr>
           </tbody></table>
-          <div class="row"><a class="btn" href="/api/runs/{c.run_id}/export">Export als ZIP</a><span class="small muted">Ordner data/runs/{c.run_id}</span></div>
+          <div class="row"><a class="btn" href="/api/runs/{c.run_id}/export">Export als ZIP</a>
+            {#if c.summary.scores}
+              {#if refs[c.test] === c.run_id}
+                <span class="badge">Referenzlauf</span><button class="link small" onclick={() => setRef(c, false)}>Referenz entfernen</button>
+              {:else}
+                <button onclick={() => setRef(c, true)}>Als Referenz markieren</button>
+              {/if}
+            {/if}<span class="small muted">Ordner data/runs/{c.run_id}</span></div>
         </div>
       {/if}
     </div>

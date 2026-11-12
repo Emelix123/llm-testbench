@@ -1,0 +1,16 @@
+{
+  "id": "context_matrix",
+  "order": 50,
+  "name": "Kontextlängen-Matrix",
+  "category": "Leistung & Kapazität",
+  "description": "Gleiche Parallelität, Input 1k, 8k, 32k, 128k und Maximum. Ergebnis: TTFT, Durchsatz und tatsächlich gleichzeitig bediente Anfragen je Kontextlänge, dazu die Prefill-Geschwindigkeit.",
+  "estimated_duration_s": 900,
+  "params": [
+    {"key": "concurrency", "label": "Parallelität", "type": "int", "default": 32},
+    {"key": "input_lengths", "label": "Input-Längen (Tokens, 0 = Maximum)", "type": "int_list", "default": [1000, 8000, 32000, 128000, 0]},
+    {"key": "output_tokens", "label": "Output-Tokens", "type": "int", "default": 300},
+    {"key": "stage_duration_s", "label": "Dauer je Länge (s)", "type": "int", "default": 120},
+    {"key": "warmup", "label": "Aufwärm-Anfragen", "type": "int", "default": 10},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ]
+}

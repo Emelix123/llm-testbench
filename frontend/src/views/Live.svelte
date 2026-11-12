@@ -34,6 +34,10 @@
       </div>
     {/each}
   </div>
+  {#if b.report}
+    <div class="panel" style="margin-top:.8rem">Prüfbericht: <a href={'/api/report/html?runs=' + b.runs.filter((r) => r.run_id).map((r) => r.run_id).join(',')} target="_blank">HTML öffnen</a>
+      {#if b.report.pdf} · PDF unter <code>{b.report.pdf}</code>{:else} · <span class="muted">{b.report.pdf_error}</span>{/if}</div>
+  {/if}
   {#if live.log.length}
     <h2>Hinweise</h2>
     <div class="panel small">{#each live.log as l}<div>{l}</div>{/each}</div>

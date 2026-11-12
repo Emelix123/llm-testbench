@@ -1,0 +1,13 @@
+{
+  "id": "spike", "order": 210, "name": "Lastspitze", "category": "Stabilität & Betrieb",
+  "description": "Von 0 auf 150 % der Kapazität für 2 min, dann zurück auf 50 %. Ergebnis: Erholungszeit und Anteil 429 gegenüber Timeouts.",
+  "estimated_duration_s": 480,
+  "params": [
+    {"key": "spike_pct", "label": "Spitze (% der Kapazität)", "type": "int", "default": 150},
+    {"key": "spike_s", "label": "Dauer der Spitze (s)", "type": "int", "default": 120},
+    {"key": "after_pct", "label": "danach (% der Kapazität)", "type": "int", "default": 50},
+    {"key": "after_s", "label": "Beobachtung danach (s)", "type": "int", "default": 300},
+    {"key": "capacity", "label": "Kapazität (parallel, leer = aus letztem Kapazitäts-Sweep)", "type": "int", "default": null}, {"key": "load_profile", "label": "Lastprofil", "type": "select", "default": "chat_kurz", "options": [{"value": "chat_kurz", "label": "Chat kurz"}, {"value": "chat_verlauf", "label": "Chat mit Verlauf"}, {"value": "rag", "label": "RAG"}, {"value": "langkontext", "label": "Langkontext"}, {"value": "generierung", "label": "Generierung"}, {"value": "agent", "label": "Agent"}]},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ]
+}

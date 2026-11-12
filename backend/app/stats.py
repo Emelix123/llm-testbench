@@ -78,6 +78,12 @@ def aggregate(recs: list[dict], slo: dict | None = None) -> dict:
     e2es = [e2e(r) for r in ok]
     tpots = [tpot(r) for r in ok]
     itls = [x for r in ok for x in (r.get("itl_ms") or [])]
+    compact = not itls and any(r.get("itl_summary") for r in ok)
+    if compact:
+        # Dauertests: ITL-Perzentile näherungsweise aus den Zusammenfassungen je Anfrage
+        itl_p = {"p50": _r(pct([r["itl_summary"]["p50"] for r in ok if r.get("itl_summary")], 50)),
+                 "p95": _r(pct([r["itl_summary"]["p95"] for r in ok if r.get("itl_summary")], 50)),
+                 "p99": _r(pct([r["itl_summary"]["p95"] for r in ok if r.get("itl_summary")], 95))}
     out_tok = sum(r.get("completion_tokens") or 0 for r in ok)
     in_tok = sum(r.get("prompt_tokens") or 0 for r in ok)
     cached = [r.get("cached_tokens") for r in ok if r.get("cached_tokens") is not None]
@@ -91,8 +97,13 @@ def aggregate(recs: list[dict], slo: dict | None = None) -> dict:
     # Hänger: lange Lücke mitten in der Antwort (Hinweis auf vollen KV-Cache / Preemption)
     itl_med = pct(itls, 50) or 0
     stall_thr = max(500.0, 10 * itl_med)
-    stalls = sum(1 for r in ok for x in (r.get("itl_ms") or []) if x > stall_thr)
-    stalled_req = sum(1 for r in ok if any(x > stall_thr for x in (r.get("itl_ms") or [])))
+    if compact:
+        stall_thr = max(500.0, 10 * (itl_p["p50"] or 0))
+        stalled_req = sum(1 for r in ok if (r.get("itl_summary") or {}).get("max", 0) > stall_thr)
+        stalls = stalled_req
+    else:
+        stalls = sum(1 for r in ok for x in (r.get("itl_ms") or []) if x > stall_thr)
+        stalled_req = sum(1 for r in ok if any(x > stall_thr for x in (r.get("itl_ms") or [])))
     per_user_tps = [1000 / x for x in tpot_vals if x > 0]
     res = {
         "requests": n,
@@ -100,7 +111,7 @@ def aggregate(recs: list[dict], slo: dict | None = None) -> dict:
         "errors": dict(errs),
         "error_rate_pct": _r(100 * (n - len(ok)) / n, 2) if n else None,
         "ttft_ms": pcts(ttfts),
-        "itl_ms": pcts(itls),
+        "itl_ms": itl_p if compact else pcts(itls),
         "tpot_ms": pcts(tpot_vals),
         "e2e_ms": pcts(e2es),
         "tokens_per_s_user_p50": _r(pct(per_user_tps, 50)),
@@ -180,3 +191,70 @@ def fmt_num(x: float | None, nd: int = 0) -> str:
 
 def fmt_pct(x: float | None, nd: int = 1) -> str:
     return "–" if x is None else fmt_num(x, nd) + " %"
+
+
+def sustained_overlap(intervals, min_ms=1000.0):
+    """Höchste Zahl gleichzeitig strömender Antworten, die mindestens min_ms lang gehalten wurde."""
+    ev = []
+    for a, b in intervals:
+        if a is None or b is None or b <= a:
+            continue
+        ev += [(a, 1), (b, -1)]
+    if not ev:
+        return 0
+    ev.sort(key=lambda x: (x[0], x[1]))
+    held = {}
+    cur, last_t = 0, ev[0][0]
+    for t, d in ev:
+        if cur > 0:
+            held[cur] = held.get(cur, 0) + (t - last_t)
+        cur += d
+        last_t = t
+    best = 0
+    for k in sorted(held):
+        # Zeit, in der mindestens k gleichzeitig liefen
+        if sum(v for kk, v in held.items() if kk >= k) >= min_ms:
+            best = k
+    return best
+
+
+def eur_per_hour(cost: dict) -> float:
+    return cost["machine_eur_per_h"] + cost["power_kw"] * cost["power_eur_per_kwh"]
+
+
+def slope_per_hour(points: list[tuple[float, float]]) -> float | None:
+    """Lineare Regression y über x (x in Sekunden) → Änderung pro Stunde."""
+    pts = [(x, y) for x, y in points if x is not None and y is not None]
+    if len(pts) < 3:
+        return None
+    n = len(pts)
+    mx = sum(x for x, _ in pts) / n
+    my = sum(y for _, y in pts) / n
+    sxx = sum((x - mx) ** 2 for x, _ in pts)
+    if sxx == 0:
+        return None
+    sxy = sum((x - mx) * (y - my) for x, y in pts)
+    return sxy / sxx * 3600
+
+
+def windows(recs: list[dict], width_s: float) -> list[tuple[float, list[dict]]]:
+    """Teilt Anfragen nach Sendezeit in Zeitfenster (Start des Fensters in s, Anfragen)."""
+    if not recs:
+        return []
+    t0 = min(r["t_send"] for r in recs)
+    out: dict[int, list] = {}
+    for r in recs:
+        out.setdefault(int((r["t_send"] - t0) / 1000 // width_s), []).append(r)
+    return [(k * width_s, v) for k, v in sorted(out.items())]
+
+
+def queue_growth(recs: list[dict]) -> dict:
+    """Wächst die Warteschlange? Vergleicht TTFT im ersten und letzten Drittel einer Stufe."""
+    ok = sorted((r for r in recs if is_ok(r) and r.get("t_first_token") is not None), key=lambda r: r["t_send"])
+    if len(ok) < 6:
+        return {"growing": None, "first_p50": None, "last_p50": None}
+    k = len(ok) // 3
+    a = pct([ttft(r) for r in ok[:k]], 50)
+    b = pct([ttft(r) for r in ok[-k:]], 50)
+    growing = b > 1.5 * a and b - a > 500
+    return {"growing": growing, "first_p50": round(a, 1), "last_p50": round(b, 1)}

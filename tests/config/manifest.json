@@ -1,0 +1,31 @@
+{
+  "id": "config",
+  "order": 100,
+  "name": "Konfiguration & Funktionen",
+  "category": "Konfiguration & Funktionen",
+  "description": "Prüft in etwa 10 Minuten, ob vLLM und LiteLLM so eingestellt sind, wie Kunden es erwarten: Tool Calling, Structured Output, Reasoning, Chat-Template, Kontextgrenze, Nadel im Heuhaufen, Multimodal, Parameter, Streaming-Format, Abbruch, LiteLLM-Durchreichung, LiteLLM-Antwort-Cache, Steckbrief. Jeder Prüfpunkt läuft durch und meldet bestanden oder nicht bestanden, mit Beispielantwort.",
+  "estimated_duration_s": 420,
+  "params": [
+    {"key": "checks", "label": "Prüfpunkte", "type": "multi",
+     "default": ["tool_calling", "structured_output", "reasoning", "chat_template", "context_limit", "needle",
+                 "multimodal", "parameters", "streaming_format", "cancel", "litellm_passthrough", "litellm_cache", "fingerprint"],
+     "options": [
+       {"value": "tool_calling", "label": "Tool Calling"},
+       {"value": "structured_output", "label": "Structured Output"},
+       {"value": "reasoning", "label": "Reasoning"},
+       {"value": "chat_template", "label": "Chat-Template"},
+       {"value": "context_limit", "label": "Kontextgrenze"},
+       {"value": "needle", "label": "Nadel im Heuhaufen"},
+       {"value": "multimodal", "label": "Multimodal (nur VL-Modelle)"},
+       {"value": "parameters", "label": "Parameter"},
+       {"value": "streaming_format", "label": "Streaming-Format"},
+       {"value": "cancel", "label": "Abbruch"},
+       {"value": "litellm_passthrough", "label": "LiteLLM-Durchreichung"},
+       {"value": "litellm_cache", "label": "LiteLLM-Antwort-Cache"},
+       {"value": "fingerprint", "label": "Steckbrief"}
+     ]},
+    {"key": "structured_requests", "label": "Structured Output: Anfragen", "type": "int", "default": 20},
+    {"key": "needle_context", "label": "Nadel: Kontextlänge (0 = 90 % des max. Kontexts)", "type": "int", "default": 0},
+    {"key": "cancel_requests", "label": "Abbruch: lange Anfragen", "type": "int", "default": 20}
+  ]
+}

@@ -13,7 +13,7 @@
 {#each suites as s}
   <div class="panel row" style="margin-top:.6rem">
     <div class="grow">
-      <b>{s.name}</b> {#if s.duration}<span class="muted small">· {s.duration}</span>{/if} {#if s.builtin}<span class="badge">fertig</span>{/if}
+      <b>{s.name}</b> {#if s.duration}<span class="muted small">· {s.duration}</span>{/if} {#if s.builtin}<span class="badge">fertig</span>{/if} {#if s.report}<span class="badge">Prüfbericht</span>{/if}
       <div class="small muted">{s.items.map((i) => name(i.test)).join(', ') || 'Tests folgen in späteren Phasen'}</div>
       {#if s.note}<div class="small muted">{s.note}</div>{/if}
     </div>
@@ -21,4 +21,4 @@
     {#if !s.builtin}<button class="danger" onclick={() => del(s)}>Löschen</button>{/if}
   </div>
 {/each}
-<p class="small muted" style="margin-top:1rem">Konfiguration, Dauerlast und Abnahme kommen mit den Phasen 3–5.</p>
+<p class="small muted" style="margin-top:1rem">Die Suite „Abnahme“ erzeugt am Ende automatisch einen Prüfbericht als HTML und PDF.</p>
