@@ -25,7 +25,7 @@
     <h3>{form.id ? 'Profil bearbeiten' : 'Neues Profil'}</h3>
     <div class="grid2">
       <label class="field"><span>Name</span><input bind:value={form.name} placeholder="z. B. GPU-Box 1 – Qwen" disabled={!!form.id} /></label>
-      <label class="field"><span>LiteLLM-URL</span><input bind:value={form.base_url} placeholder="https://llm.example.de" /></label>
+      <label class="field"><span>LiteLLM-URL (Basis, ohne /v1/chat/completions)</span><input bind:value={form.base_url} placeholder="https://llm.example.de" /></label>
       <label class="field"><span>Modell (wie in /v1/models)</span><input bind:value={form.model} /></label>
       <label class="field"><span>Tokenizer (Hugging-Face-Name oder Pfad zu tokenizer.json)</span><input bind:value={form.tokenizer} placeholder="Qwen/Qwen2.5-72B-Instruct" /></label>
       <label class="field"><span>Max. Kontext (Tokens)</span><input type="number" bind:value={form.max_context} /></label>

@@ -163,7 +163,8 @@ PROFILE_FIELDS = ("name", "base_url", "model", "tokenizer", "api_key_name",
 def save_profile(data: dict) -> dict:
     pid = slugify(data.get("id") or data.get("name") or "profil")
     prof = {k: data.get(k) for k in PROFILE_FIELDS if data.get(k) is not None}
-    prof["base_url"] = (prof.get("base_url") or "").rstrip("/")
+    from .client import normalize_base_url
+    prof["base_url"] = normalize_base_url(prof.get("base_url") or "")
     if not prof.get("api_key_name"):
         prof["api_key_name"] = (pid.upper().replace("-", "_") + "_API_KEY")
     existing = get_profile(pid) or {}

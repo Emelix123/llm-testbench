@@ -79,11 +79,16 @@ async def check_profile(pid: str):
         net = await measure_network_latency(c, ep, n=3)
         st, data, dur, _, err = await simple_get(c, ep, "/v1/models")
         models = [m.get("id") for m in data.get("data", [])] if isinstance(data, dict) else []
+        hint = ""
+        if st == 404:
+            hint = (f" – unter {ep.url('/v1/models')} gibt es nichts. Ist die URL die von LiteLLM "
+                    "(z. B. https://llm.example.de, ohne /v1/chat/completions)?")
         items.append({"key": "reachable", "label": "Endpunkt erreichbar",
-                      "ok": st is not None and st < 500,
-                      "detail": err or f"HTTP {st} in {dur:.0f} ms"})
+                      "ok": st is not None and st < 500 and st != 404,
+                      "detail": (err or f"HTTP {st} in {dur:.0f} ms") + hint})
         items.append({"key": "auth", "label": "API-Key akzeptiert", "ok": st == 200,
-                      "detail": f"HTTP {st}" if st else "–"})
+                      "detail": {401: "HTTP 401 – Key ungültig", 403: "HTTP 403 – Key ohne Berechtigung",
+                                 404: "nicht prüfbar (URL falsch, siehe oben)"}.get(st, f"HTTP {st}" if st else "–")})
         items.append({"key": "model", "label": f"Modell „{prof['model']}“ in /v1/models",
                       "ok": prof["model"] in models,
                       "detail": ", ".join(models[:8]) + (" …" if len(models) > 8 else "") if models else "keine Liste"})

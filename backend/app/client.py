@@ -55,11 +55,33 @@ def make_client(max_connections: int = 1024, timeout_s: float = 600) -> httpx.As
     )
 
 
+_URL_SUFFIXES = ("/chat/completions", "/completions", "/models", "/embeddings", "/responses")
+
+
+def normalize_base_url(url: str) -> str:
+    """Basis-URL ohne /v1 und ohne Endpunkt-Pfad.
+
+    Akzeptiert https://host, https://host/v1 und https://host/v1/chat/completions
+    (häufig so aus der Doku kopiert) und liefert jeweils https://host.
+    """
+    u = (url or "").strip().rstrip("/")
+    for suf in _URL_SUFFIXES:
+        if u.endswith(suf):
+            u = u[: -len(suf)].rstrip("/")
+            break
+    if u.endswith("/v1"):
+        u = u[:-3]
+    return u.rstrip("/")
+
+
 @dataclass
 class Endpoint:
     base_url: str
     model: str
     api_key: str | None = None
+
+    def __post_init__(self):
+        self.base_url = normalize_base_url(self.base_url)
 
     @property
     def headers(self) -> dict:
@@ -69,10 +91,7 @@ class Endpoint:
         return h
 
     def url(self, path: str) -> str:
-        base = self.base_url.rstrip("/")
-        if base.endswith("/v1") and path.startswith("/v1/"):
-            path = path[3:]
-        return base + path
+        return self.base_url + path
 
 
 @dataclass
