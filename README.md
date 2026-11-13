@@ -21,7 +21,7 @@ Das gebaute Frontend liegt in `frontend/dist`; npm braucht man nur, um es neu zu
 
 Startet einen Mock, der vLLM + LiteLLM nachbildet (feste Slots, KV-Cache, Prefill/Decode-Zeiten,
 Prefix-Cache, LiteLLM-Header, Tool Calling, JSON-Schema, Stop, Seed, Logprobs; mit `--vision` Bilder,
-mit `--reasoning` Denk-Teil, mit `--response-cache` ein fälschlich aktiver Antwort-Cache; `--block-size`, `--no-prefix-caching`, `--ignore-cache-salt` und `--no-cached-tokens` für den Prefix-Cache-Seitenkanal).
+mit `--reasoning` Denk-Teil, mit `--response-cache` ein fälschlich aktiver Antwort-Cache; `--block-size`, `--no-prefix-caching`, `--ignore-cache-salt`, `--no-cached-tokens` für den Prefix-Cache-Seitenkanal; `--max-n` für die n-Grenze bei der Ressourcenverdrängung).
 Der Mock ist bewusst einfach: Qualitätswerte gegen ihn sagen nichts aus. Endpunkt-Profil: URL `http://127.0.0.1:4000`, Modell `mock-llm`,
 beliebiger Key. Der Parallelitäts-Test sollte dann 24 messen.
 
@@ -91,6 +91,7 @@ markiert und aus den bis dahin gespeicherten Anfragen ausgewertet.
 | | Cache-Nutzen | TTFT-Ersparnis bei gemeinsamem System-Prompt und wachsendem Verlauf, Trefferquote |
 | | Kosten je Token-Art | € / 1 Mio. Input-, Output- und Cache-Tokens, Mischpreis je Lastprofil |
 | Sicherheit (Mandantentrennung) | Prefix-Cache-Seitenkanal (CVE-2025-46570) | Timing- und cached_tokens-Seitenkanal; AUC/Cohens d je Einstellung (cache_salt, Caching, Blockgröße, Last) |
+| | Ressourcenverdrängung / Noisy Neighbor (CVE-2026-34756) | Opfer-Latenz mit/ohne Störnachbar (Flut, lange Anfragen, großes n); Präfix-Verdrängung; n-Grenze |
 | Konfiguration & Funktionen | Konfiguration & Funktionen | 13 Prüfpunkte: Tool Calling, Structured Output, Reasoning, Chat-Template, Kontextgrenze, Nadel im Heuhaufen, Multimodal, Parameter, Streaming-Format, Abbruch, LiteLLM-Durchreichung, LiteLLM-Antwort-Cache, Steckbrief |
 | Stabilität & Betrieb | Dauerlast | 1–4 h bei 75 % der Kapazität, Drift von TTFT und Tokens/s pro Stunde |
 | | Lastspitze | 150 % für 2 min, dann 50 %: Erholungszeit, 429 gegenüber Timeouts |
@@ -154,6 +155,33 @@ steigt blockweise.
 
 Mit cache_salt pro Mandant oder abgeschaltetem Prefix-Caching fällt die AUC auf ~0,5 zurück
 (grün). So lässt sich belegen, ob eine Gegenmaßnahme greift – ohne und mit Last.
+
+### Ressourcenverdrängung / Noisy Neighbor (CVE-2026-34756)
+
+Der Test `resource_contention` misst, wie stark ein einzelner Mandant die **Verfügbarkeit**
+für andere senkt. Alle Anfragen teilen sich denselben KV-Cache-Speicher, und vLLM plant fair
+je Anfrage, nicht je Mandant – ein Mandant mit vielen, langen oder n-starken Anfragen erhält
+also mehr Ressourcen und verzögert die anderen.
+
+Ablauf: Ein **Opfer** (gut benehmender Mandant) stellt die ganze Zeit gleichmäßig normale
+Anfragen. Gemessen wird dessen Latenz **ohne** und **mit** einem **Störnachbarn**:
+
+- Angriffsarten (`attack_mode`): `flood` (viele parallele Anfragen), `long` (sehr hoher Output,
+  hält KV-Cache), `big_n` (großes `n`, der Hebel aus der CVE), `combined`.
+- Gemessen am Opfer: TTFT, TPOT, E2E, Goodput, Fehler und Abbrüche – ohne vs. mit Angriff,
+  als Faktor (z. B. „TTFT p95 ×4,5", „Goodput 100 % → 0 %").
+- **n-Grenze:** Der Test prüft per Leiter (2 … 100000), bis zu welchem `n` der Server annimmt.
+  vLLM begrenzt `n` nur global (VLLM_MAX_N_SEQUENCES, Standard 16384; Empfehlung 64–128),
+  nicht je Mandant – ein hoher angenommener Wert wird als Warnung ausgewiesen.
+- **Präfix-Verdrängung:** Ein gecachter Opfer-Präfix wird vor und während des Angriffs gemessen.
+  Fallen die `cached_tokens`, hat der Störnachbar die Blöcke des Opfers aus dem Cache verdrängt.
+  Fehlt `cached_tokens`, lässt sich Verdrängung nicht von Warteschlange trennen – der Test sagt
+  das dann offen (ein TTFT-Anstieg allein beweist keine Verdrängung).
+
+Ampel aus Verteidigersicht: rot = Opfer stark beeinträchtigt. Grün (geringe Beeinträchtigung)
+deutet darauf, dass eine Begrenzung je Mandant im Gateway oder getrennte Instanzen greifen.
+Für einen Vorher-Nachher-Nachweis einer Gegenmaßnahme eignet sich die Vergleichsansicht.
+
 
 Gegen den mitgelieferten Mock (`--block-size`, `--no-prefix-caching`, `--ignore-cache-salt`,
 `--no-cached-tokens`) sind absolute Cohens-d-Werte unrealistisch hoch, weil der Mock kaum

@@ -1,0 +1,28 @@
+{
+  "id": "resource_contention",
+  "order": 410,
+  "name": "Ressourcenverdrängung / Noisy Neighbor (CVE-2026-34756)",
+  "category": "Sicherheit (Mandantentrennung)",
+  "description": "Misst, wie stark ein einzelner Mandant die Verfügbarkeit für andere beeinträchtigt. Ein Opfer-Mandant stellt gleichmäßig normale Anfragen; gemessen werden dessen TTFT, TPOT, Goodput und Fehler ohne und mit einem Störnachbarn. Der Störnachbar belegt den geteilten KV-Cache per Flut, sehr langen Anfragen oder großem n. Zusätzlich: ob der Server n begrenzt und ob der Angreifer gecachte Präfixe des Opfers verdrängt (TTFT steigt). Nur gegen eigene Systeme mit Erlaubnis. Rot = Opfer stark beeinträchtigt / verwundbar.",
+  "estimated_duration_s": 120,
+  "params": [
+    {"key": "attack_mode", "label": "Angriffsart", "type": "select", "default": "flood",
+     "options": [
+       {"value": "flood", "label": "Flut (viele parallele Anfragen)"},
+       {"value": "long", "label": "Lange Anfragen (hoher Output, hält KV-Cache)"},
+       {"value": "big_n", "label": "Großes n (mehrere Antworten je Anfrage, CVE-Hebel)"},
+       {"value": "combined", "label": "Kombiniert (Flut + großes n)"}
+     ]},
+    {"key": "attack_concurrency", "label": "Störnachbar: parallele Anfragen", "type": "int", "default": 32},
+    {"key": "attack_output_tokens", "label": "Störnachbar: Output-Tokens (bei langen Anfragen)", "type": "int", "default": 2000},
+    {"key": "attack_n", "label": "Störnachbar: n (bei großem n)", "type": "int", "default": 256},
+    {"key": "victim_concurrency", "label": "Opfer: parallele Anfragen (gut benehmender Mandant)", "type": "int", "default": 2},
+    {"key": "victim_input", "label": "Opfer: Input-Tokens", "type": "int", "default": 512},
+    {"key": "victim_output", "label": "Opfer: Output-Tokens", "type": "int", "default": 200},
+    {"key": "baseline_s", "label": "Dauer Grundmessung ohne Angriff (s)", "type": "int", "default": 30},
+    {"key": "attack_s", "label": "Dauer unter Angriff (s)", "type": "int", "default": 60},
+    {"key": "eviction_test", "label": "Präfix-Verdrängung prüfen", "type": "bool", "default": true},
+    {"key": "evict_prefix_tokens", "label": "Länge des gecachten Opfer-Präfixes", "type": "int", "default": 2000},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ]
+}

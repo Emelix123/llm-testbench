@@ -42,6 +42,7 @@ ap.add_argument("--response-cache", action="store_true", help="LiteLLM-Antwort-C
 ap.add_argument("--block-size", type=int, default=16, help="Tokens je Cache-Block (vLLM: 16)")
 ap.add_argument("--no-prefix-caching", action="store_true", help="Prefix-Caching ganz abschalten")
 ap.add_argument("--no-cached-tokens", action="store_true", help="prompt_tokens_details.cached_tokens NICHT liefern")
+ap.add_argument("--max-n", type=int, default=16384, help="Obergrenze fuer n (vLLM VLLM_MAX_N_SEQUENCES-Standard)")
 ap.add_argument("--honor-cache-salt", dest="honor_cache_salt", action="store_true", default=True,
                 help="cache_salt aus dem Request in den Block-Hash einfließen lassen (vLLM >= 0.9, Standard)")
 ap.add_argument("--ignore-cache-salt", dest="honor_cache_salt", action="store_false",
@@ -302,8 +303,9 @@ async def chat(req: Request):
     else:
         rng = random.Random()
     n_choices = int(body.get("n") or 1)
-    if n_choices > 8:
-        return JSONResponse({"error": {"message": "n must be <= 8", "code": "400"}}, 400, headers=ll_headers())
+    if n_choices < 1 or n_choices > args.max_n:
+        return JSONResponse({"error": {"message": f"n must be between 1 and {args.max_n}", "code": "400"}},
+                            400, headers=ll_headers())
     if args.vision is False and images_in(body):
         pass
     reasoning, fixed, tool_calls = plan_answer(body, text, rng)
@@ -332,7 +334,10 @@ async def chat(req: Request):
     if tool_calls:
         words, finish = [], "tool_calls"
     n_out = len(reasoning) + len(words) + 8 * len(tool_calls)
-    need = p_tok + n_out
+    need = p_tok + n_out * max(1, n_choices)  # grosses n belegt KV-Cache fuer mehrere Sequenzen
+    if need > args.kv_tokens:
+        return JSONResponse({"error": {"message": f"requested tokens ({need}) exceed KV cache capacity "
+                                                  f"({args.kv_tokens})", "code": "400"}}, 400, headers=ll_headers())
     unknown = set(body) - allowed
     stream = body.get("stream", False)
     include_usage = (body.get("stream_options") or {}).get("include_usage", False)
