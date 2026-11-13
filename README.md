@@ -21,7 +21,7 @@ Das gebaute Frontend liegt in `frontend/dist`; npm braucht man nur, um es neu zu
 
 Startet einen Mock, der vLLM + LiteLLM nachbildet (feste Slots, KV-Cache, Prefill/Decode-Zeiten,
 Prefix-Cache, LiteLLM-Header, Tool Calling, JSON-Schema, Stop, Seed, Logprobs; mit `--vision` Bilder,
-mit `--reasoning` Denk-Teil, mit `--response-cache` ein fälschlich aktiver Antwort-Cache).
+mit `--reasoning` Denk-Teil, mit `--response-cache` ein fälschlich aktiver Antwort-Cache; `--block-size`, `--no-prefix-caching`, `--ignore-cache-salt` und `--no-cached-tokens` für den Prefix-Cache-Seitenkanal).
 Der Mock ist bewusst einfach: Qualitätswerte gegen ihn sagen nichts aus. Endpunkt-Profil: URL `http://127.0.0.1:4000`, Modell `mock-llm`,
 beliebiger Key. Der Parallelitäts-Test sollte dann 24 messen.
 
@@ -90,6 +90,7 @@ markiert und aus den bis dahin gespeicherten Anfragen ausgewertet.
 | | Kontextlängen-Matrix | TTFT, Durchsatz und bediente Anfragen je Input-Länge, Prefill-Geschwindigkeit |
 | | Cache-Nutzen | TTFT-Ersparnis bei gemeinsamem System-Prompt und wachsendem Verlauf, Trefferquote |
 | | Kosten je Token-Art | € / 1 Mio. Input-, Output- und Cache-Tokens, Mischpreis je Lastprofil |
+| Sicherheit (Mandantentrennung) | Prefix-Cache-Seitenkanal (CVE-2025-46570) | Timing- und cached_tokens-Seitenkanal; AUC/Cohens d je Einstellung (cache_salt, Caching, Blockgröße, Last) |
 | Konfiguration & Funktionen | Konfiguration & Funktionen | 13 Prüfpunkte: Tool Calling, Structured Output, Reasoning, Chat-Template, Kontextgrenze, Nadel im Heuhaufen, Multimodal, Parameter, Streaming-Format, Abbruch, LiteLLM-Durchreichung, LiteLLM-Antwort-Cache, Steckbrief |
 | Stabilität & Betrieb | Dauerlast | 1–4 h bei 75 % der Kapazität, Drift von TTFT und Tokens/s pro Stunde |
 | | Lastspitze | 150 % für 2 min, dann 50 %: Erholungszeit, 429 gegenüber Timeouts |
@@ -109,6 +110,55 @@ deckt die Kategorien mit einer kleinen Auswahl ab.
 Stabilitätstests nehmen die Kapazität aus dem letzten Kapazitäts-Sweep desselben Endpunkts, wenn
 sie nicht als Parameter gesetzt ist. Sie speichern ITL pro Anfrage zusammengefasst (n, p50, p95, max),
 damit ein 4-h-Lauf nicht mehrere GB Rohdaten erzeugt.
+
+## Sicherheitstest: Prefix-Cache-Seitenkanal (CVE-2025-46570)
+
+Der Test `prefix_cache_leak` stellt den Timing-Seitenkanal von geteiltem Prefix-Caching nach
+und misst, **ob er je nach Einstellung funktioniert**. Nur gegen eigene Systeme mit Erlaubnis.
+Die Ampel bewertet aus Verteidigersicht: **rot = verwundbar**, grün = kein nutzbares Signal.
+
+Was gemessen wird, Schritt für Schritt:
+
+1. Ein **Opfer** (ein Mandant) sendet einen zufälligen Präfix P. Dessen Blöcke landen im Cache.
+2. Der **Angreifer** (anderer Mandant) sendet im Treffer-Fall `P + eigener Zusatz`
+   (gemeinsame Blöcke = Cache-Treffer) und im Fehlschlag-Fall einen frischen Präfix (Cache-Fehlschlag).
+   P ist je Messung neu zufällig, damit nichts nachwirkt.
+3. Gemessen werden zwei Signale: die **Antwortzeit (TTFT)** und das Feld
+   `prompt_tokens_details.cached_tokens`.
+
+Zwei Ergebnismaße:
+
+- **AUC** – wie gut sich Treffer und Fehlschlag an der TTFT trennen lassen (0,5 = Raten,
+  1,0 = perfekt unterscheidbar). Das ist das Maß aus der CVE.
+- **Cohens d** – die Effektstärke. In der Literatur senkt Last anderer Mandanten sie deutlich;
+  der Test misst mit `background_load > 0` zusätzlich unter Last.
+- **cached_tokens-Oracle** – liefert der Endpunkt das Feld, kann der Angreifer Treffer direkt
+  ablesen, ganz ohne Zeitmessung (InputSnatch-Prinzip). Das Gateway darf dieses Feld und den
+  Präfix-Cache-Zählerendpunkt von vLLM nicht nach außen geben.
+
+Variierbare Einstellungen (Parameter des Tests):
+
+| Parameter | Wirkung |
+|---|---|
+| `salt_mode` = `none` | kein `cache_salt` → geteilter Cache → **angreifbar** |
+| `salt_mode` = `per_tenant` | Gateway setzt festen Salt je Mandant → Opfer und Angreifer teilen keine Blöcke |
+| `salt_mode` = `per_request` | eindeutiger Salt je Anfrage → schaltet Caching praktisch aus |
+| `salt_field` | Feldname des Salts im Request (prüft zugleich, ob LiteLLM ihn durchreicht – vgl. CVE-2026-105752) |
+| `prefix_tokens` | Länge des Opfer-Präfixes |
+| `background_load` | Zahl paralleler Mitmandanten; misst zusätzlich unter Last |
+| `granularity_sweep` | Sweep über die Präfix-Übereinstimmung: zeigt, dass Treffer nur an **Blockgrenzen** entstehen (bei 16 Tokens je Block muss ein Angreifer je einen ganzen Block raten) |
+
+Der Granularitäts-Sweep reproduziert den CVE-Befund: unterhalb einer Blockgröße (z. B. 8 von 16
+Tokens) bleibt die AUC bei ~0,5, ab einem vollen Block springt sie gegen 1,0; `cached_tokens`
+steigt blockweise.
+
+Mit cache_salt pro Mandant oder abgeschaltetem Prefix-Caching fällt die AUC auf ~0,5 zurück
+(grün). So lässt sich belegen, ob eine Gegenmaßnahme greift – ohne und mit Last.
+
+Gegen den mitgelieferten Mock (`--block-size`, `--no-prefix-caching`, `--ignore-cache-salt`,
+`--no-cached-tokens`) sind absolute Cohens-d-Werte unrealistisch hoch, weil der Mock kaum
+Zeitrauschen hat; die AUC und der Sweep sind aussagekräftig. An einem echten vLLM liegt d im
+realistischen Bereich und der Lastabfall wird sichtbar.
 
 ## Suiten
 

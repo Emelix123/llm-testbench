@@ -258,3 +258,74 @@ def queue_growth(recs: list[dict]) -> dict:
     b = pct([ttft(r) for r in ok[-k:]], 50)
     growing = b > 1.5 * a and b - a > 500
     return {"growing": growing, "first_p50": round(a, 1), "last_p50": round(b, 1)}
+
+
+# ------------------------------------------------------------- Seitenkanal-Maße
+
+def auc(pos: list[float], neg: list[float]) -> float | None:
+    """Fläche unter der ROC: P(score der pos-Klasse > score der neg-Klasse), Ties = 0,5.
+
+    pos/neg sind die Scores beider Klassen (höherer Score = eher pos). 0,5 = reines
+    Raten, 1,0 = perfekte Unterscheidung. Entspricht dem CVE-Maß für den Seitenkanal.
+    """
+    if not pos or not neg:
+        return None
+    vals = sorted(([(v, 1) for v in pos] + [(v, 0) for v in neg]), key=lambda x: x[0])
+    # Rangsumme der pos-Klasse (Mann-Whitney-U), Ties mitteln
+    ranks = [0.0] * len(vals)
+    i = 0
+    while i < len(vals):
+        j = i
+        while j + 1 < len(vals) and vals[j + 1][0] == vals[i][0]:
+            j += 1
+        r = (i + j) / 2 + 1
+        for k in range(i, j + 1):
+            ranks[k] = r
+        i = j + 1
+    rank_pos = sum(ranks[k] for k in range(len(vals)) if vals[k][1] == 1)
+    n_pos, n_neg = len(pos), len(neg)
+    u = rank_pos - n_pos * (n_pos + 1) / 2
+    return u / (n_pos * n_neg)
+
+
+def cohens_d(a: list[float], b: list[float]) -> float | None:
+    """Effektstärke zwischen zwei Verteilungen (gepoolte Standardabweichung)."""
+    if len(a) < 2 or len(b) < 2:
+        return None
+    ma, mb = sum(a) / len(a), sum(b) / len(b)
+    va = sum((x - ma) ** 2 for x in a) / (len(a) - 1)
+    vb = sum((x - mb) ** 2 for x in b) / (len(b) - 1)
+    sp = (((len(a) - 1) * va + (len(b) - 1) * vb) / (len(a) + len(b) - 2)) ** 0.5
+    if sp == 0:
+        return None
+    return (ma - mb) / sp
+
+
+def best_threshold_accuracy(pos: list[float], neg: list[float]) -> tuple[float, float] | None:
+    """Beste Trefferquote eines Schwellenwerts auf dem Score (pos hoch). Gibt (Schwelle, Genauigkeit)."""
+    if not pos or not neg:
+        return None
+    cands = sorted(set(pos + neg))
+    best = (None, 0.0)
+    for t in cands:
+        acc = (sum(1 for x in pos if x >= t) + sum(1 for x in neg if x < t)) / (len(pos) + len(neg))
+        if acc > best[1]:
+            best = (t, acc)
+    return best
+
+
+def histogram(values: list[float], bins: int = 24, lo: float | None = None, hi: float | None = None):
+    """[[Mitte, Anzahl], …] für ein Balkendiagramm."""
+    v = [x for x in values if x is not None]
+    if not v:
+        return []
+    lo = min(v) if lo is None else lo
+    hi = max(v) if hi is None else hi
+    if hi <= lo:
+        hi = lo + 1
+    w = (hi - lo) / bins
+    counts = [0] * bins
+    for x in v:
+        k = min(bins - 1, max(0, int((x - lo) / w)))
+        counts[k] += 1
+    return [[round(lo + (k + 0.5) * w, 3), counts[k]] for k in range(bins)]

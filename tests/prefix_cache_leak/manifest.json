@@ -1,0 +1,27 @@
+{
+  "id": "prefix_cache_leak",
+  "order": 400,
+  "name": "Prefix-Cache-Seitenkanal (CVE-2025-46570)",
+  "category": "Sicherheit (Mandantentrennung)",
+  "description": "Stellt den Prefix-Caching-Seitenkanal nach: Ein Opfer sendet einen Präfix, der Angreifer misst an der Antwortzeit (TTFT) und an prompt_tokens_details.cached_tokens, ob derselbe Präfix bereits im geteilten Cache liegt. Je Einstellung (cache_salt, Prefix-Caching, Blockgröße, Last) wird gemessen, ob der Angriff funktioniert. Maße: AUC (0,5 = Raten, 1,0 = perfekt unterscheidbar, wie im CVE) und Cohens d. ACHTUNG: Nur gegen eigene Systeme mit Erlaubnis. Rot = verwundbar.",
+  "estimated_duration_s": 300,
+  "params": [
+    {"key": "trials", "label": "Messungen je Bedingung (Treffer/Fehlschlag)", "type": "int", "default": 60},
+    {"key": "prefix_tokens", "label": "Länge des Opfer-Präfixes (Tokens)", "type": "int", "default": 512},
+    {"key": "salt_mode", "label": "cache_salt", "type": "select", "default": "none",
+     "options": [
+       {"value": "none", "label": "keiner (Standard-vLLM: geteilter Cache – angreifbar)"},
+       {"value": "per_tenant", "label": "pro Mandant (Gateway setzt festen Salt je Mandant)"},
+       {"value": "per_request", "label": "pro Anfrage (eindeutig – schaltet Caching praktisch aus)"}
+     ]},
+    {"key": "salt_field", "label": "Feldname für den Salt im Request", "type": "string", "default": "cache_salt"},
+    {"key": "background_load", "label": "Last anderer Mandanten (parallele Anfragen, 0 = ruhig; >0 misst zusätzlich unter Last)", "type": "int", "default": 0},
+    {"key": "granularity_sweep", "label": "Block-Granularität vermessen (Sweep über Übereinstimmung)", "type": "bool", "default": true},
+    {"key": "sweep_tokens", "label": "Sweep: übereinstimmende Präfix-Längen (Tokens)", "type": "int_list", "default": [0, 8, 16, 32, 64, 128, 256, 512]},
+    {"key": "sweep_trials", "label": "Sweep: Messungen je Länge", "type": "int", "default": 25},
+    {"key": "probe_tokens", "label": "Max. Output-Tokens je Messung", "type": "int", "default": 1},
+    {"key": "auc_warn", "label": "Gelb ab AUC", "type": "float", "default": 0.6},
+    {"key": "auc_fail", "label": "Rot ab AUC", "type": "float", "default": 0.75},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ]
+}

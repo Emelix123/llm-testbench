@@ -39,6 +39,13 @@ ap.add_argument("--key", default="", help="erwarteter API-Key (leer = keiner)")
 ap.add_argument("--reasoning", action="store_true", help="Denk-Teil in reasoning_content liefern")
 ap.add_argument("--vision", action="store_true", help="Bilder verstehen (VL-Modell)")
 ap.add_argument("--response-cache", action="store_true", help="LiteLLM-Antwort-Cache simulieren (Fehlkonfiguration)")
+ap.add_argument("--block-size", type=int, default=16, help="Tokens je Cache-Block (vLLM: 16)")
+ap.add_argument("--no-prefix-caching", action="store_true", help="Prefix-Caching ganz abschalten")
+ap.add_argument("--no-cached-tokens", action="store_true", help="prompt_tokens_details.cached_tokens NICHT liefern")
+ap.add_argument("--honor-cache-salt", dest="honor_cache_salt", action="store_true", default=True,
+                help="cache_salt aus dem Request in den Block-Hash einfließen lassen (vLLM >= 0.9, Standard)")
+ap.add_argument("--ignore-cache-salt", dest="honor_cache_salt", action="store_false",
+                help="cache_salt ignorieren (altes vLLM / Gateway reicht ihn nicht durch)")
 args, _ = ap.parse_known_args()
 
 app = FastAPI()
@@ -69,19 +76,29 @@ def prompt_text(body) -> str:
     return "\n".join(out)
 
 
-def cached_prefix(text: str) -> int:
-    """Blockweise (je 64 Tokens = 256 Zeichen) gemeinsame Anfänge zählen."""
+def cached_prefix(text: str, salt: str | None) -> int:
+    """Gemeinsame Blockpräfixe zählen (wie vLLMs Prefix-Cache).
+
+    Ein Block umfasst --block-size Tokens (je ~4 Zeichen). Ein Block wird allein an
+    Tokens und Präfix erkannt, nicht am Mandanten – daher teilen sich alle Anfragen
+    denselben Cache. Trägt die Anfrage einen cache_salt und honor-cache-salt ist an,
+    fließt er in den Hash des ersten Blocks ein (CVE-2025-46570): nur Anfragen mit
+    demselben Salt teilen dann Blöcke.
+    """
+    if args.no_prefix_caching:
+        return 0
+    blk = max(1, args.block_size) * 4  # Zeichen je Block
+    seed = (salt + "\x00") if (salt and args.honor_cache_salt) else ""
     hit = 0
-    blk = 256
     for i in range(blk, len(text) + 1, blk):
-        h = hashlib.blake2b(text[:i].encode(), digest_size=8).hexdigest()
+        h = hashlib.blake2b((seed + text[:i]).encode(), digest_size=8).hexdigest()
         if h in prefix_cache:
             hit = i // 4
         else:
             break
     for i in range(blk, len(text) + 1, blk):
-        prefix_cache[hashlib.blake2b(text[:i].encode(), digest_size=8).hexdigest()] = 1
-    if len(prefix_cache) > 500_000:
+        prefix_cache[hashlib.blake2b((seed + text[:i]).encode(), digest_size=8).hexdigest()] = 1
+    if len(prefix_cache) > 2_000_000:
         prefix_cache.clear()
     return hit
 
@@ -277,7 +294,7 @@ async def chat(req: Request):
                             400, headers=ll_headers())
     allowed = {"model", "messages", "max_tokens", "temperature", "stream", "stream_options", "ignore_eos",
                "min_tokens", "seed", "stop", "top_p", "n", "logprobs", "top_logprobs", "tools", "tool_choice",
-               "response_format", "parallel_tool_calls", "chat_template_kwargs", "reasoning_effort"}
+               "response_format", "parallel_tool_calls", "chat_template_kwargs", "reasoning_effort", "cache_salt"}
     temp = body.get("temperature", 1.0)
     seed = body.get("seed")
     if temp == 0 or seed is not None:
@@ -321,7 +338,7 @@ async def chat(req: Request):
     include_usage = (body.get("stream_options") or {}).get("include_usage", False)
     want_lp = bool(body.get("logprobs"))
     cache_key = hashlib.blake2b(json.dumps(body, sort_keys=True).encode(), digest_size=8).hexdigest()
-    cached = cached_prefix(text)
+    cached = cached_prefix(text, body.get("cache_salt"))
     rid = f"chatcmpl-{random.getrandbits(48):x}"
 
     def chunk_of(delta, fin=None):
@@ -365,7 +382,7 @@ async def chat(req: Request):
                 u = {"id": rid, "object": "chat.completion.chunk", "model": args.model, "choices": [],
                      "usage": {"prompt_tokens": p_tok, "completion_tokens": n_out, "total_tokens": p_tok + n_out,
                                "completion_tokens_details": {"reasoning_tokens": len(reasoning)} if reasoning else None,
-                               "prompt_tokens_details": {"cached_tokens": cached}}}
+                               "prompt_tokens_details": (None if args.no_cached_tokens else {"cached_tokens": cached})}}
                 yield f"data: {json.dumps(u)}\n\n"
             yield "data: [DONE]\n\n"
         finally:
@@ -401,7 +418,7 @@ async def chat(req: Request):
            "choices": choices,
            "usage": {"prompt_tokens": p_tok, "completion_tokens": n_out * n_choices,
                      "total_tokens": p_tok + n_out * n_choices,
-                     "prompt_tokens_details": {"cached_tokens": cached}}}
+                     "prompt_tokens_details": (None if args.no_cached_tokens else {"cached_tokens": cached})}}
     if args.response_cache:
         response_cache[cache_key] = out
     return JSONResponse(out, headers=headers)
