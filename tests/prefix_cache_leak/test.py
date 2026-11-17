@@ -220,6 +220,7 @@ def _phase_metrics(recs, phase):
         return out
     # Treffer sind schneller -> Score = -TTFT, positive Klasse = Treffer
     out["auc"] = stats.auc([-t for t in th], [-t for t in tm])
+    out["auc_ci"] = stats.bootstrap_auc_ci([-t for t in th], [-t for t in tm])
     out["d"] = abs(stats.cohens_d(tm, th) or 0)
     bt = stats.best_threshold_accuracy([-t for t in th], [-t for t in tm])
     out["accuracy"] = bt[1] if bt else None
@@ -251,13 +252,20 @@ def summarize(recs, stages, cfg, settings):
                 "kpis": {}, "charts": [], "tables": []}
 
     auc = quiet["auc"]
+    ci = quiet.get("auc_ci")
+    includes_half = bool(ci) and ci[0] <= 0.5 <= ci[1]   # Thesis-Kriterium: nicht von Raten unterscheidbar
+    ci_txt = f" (95%-KI {stats.fmt_num(ci[0], 2)}–{stats.fmt_num(ci[1], 2)})" if ci else ""
     leak = quiet.get("cached_available") and (
         (quiet.get("cached_auc") or 0) >= 0.9 or
         (quiet.get("cached_hit_share", 0) - quiet.get("cached_miss_share", 0)) >= 50)
 
-    # Verdict aus Verteidigersicht: rot = Angriff funktioniert
-    if leak or auc >= p["auc_fail"]:
+    # Verdict aus Verteidigersicht: rot = Angriff funktioniert, gruen = gelöst.
+    # "Gelöst" nach Tabelle 3.4 der Arbeit: das 95%-KI der AUC schließt 0,5 ein
+    # (kein cached_tokens-Leck). "Verwundbar": AUC-Untergrenze deutlich über 0,5.
+    if leak or (ci and ci[0] >= p["auc_fail"]) or auc >= p["auc_fail"]:
         verdict = "rot"
+    elif includes_half and not leak:
+        verdict = "gruen"
     elif auc >= p["auc_warn"]:
         verdict = "gelb"
     else:
@@ -267,19 +275,19 @@ def summarize(recs, stages, cfg, settings):
                 "per_tenant": "mit cache_salt pro Mandant",
                 "per_request": "mit cache_salt pro Anfrage"}[p["salt_mode"]]
     if verdict == "rot":
-        head = (f"Angriff erfolgreich {salt_txt}: Mandanten an der Antwortzeit unterscheidbar "
-                f"(AUC {stats.fmt_num(auc, 2)}, Cohens d {stats.fmt_num(quiet['d'], 2)}, "
+        head = (f"VERWUNDBAR {salt_txt}: Mandanten an der Antwortzeit unterscheidbar "
+                f"(AUC {stats.fmt_num(auc, 2)}{ci_txt}, deutlich über 0,5; Cohens d {stats.fmt_num(quiet['d'], 2)}, "
                 f"Trefferquote {stats.fmt_pct(100 * (quiet.get('accuracy') or 0), 0)}).")
         if leak:
             head += (" Zusätzlich verrät cached_tokens die Treffer direkt, ohne Zeitmessung "
                      f"({stats.fmt_pct(quiet.get('cached_hit_share'), 0)} der Treffer gegen "
                      f"{stats.fmt_pct(quiet.get('cached_miss_share'), 0)} der Fehlschläge).")
     elif verdict == "gelb":
-        head = (f"Schwaches Signal {salt_txt}: AUC {stats.fmt_num(auc, 2)}, Cohens d "
+        head = (f"Schwaches Signal {salt_txt}: AUC {stats.fmt_num(auc, 2)}{ci_txt}, Cohens d "
                 f"{stats.fmt_num(quiet['d'], 2)}. Mit mehr Messungen oder zu ruhigen Zeiten evtl. nutzbar.")
     else:
-        head = (f"Kein nutzbares Signal {salt_txt}: AUC {stats.fmt_num(auc, 2)} (0,5 = Raten). "
-                "Treffer und Fehlschläge sind an der Antwortzeit nicht zu unterscheiden.")
+        head = (f"NICHT VERWUNDBAR {salt_txt}: AUC {stats.fmt_num(auc, 2)}{ci_txt} – das Konfidenzintervall "
+                "schließt 0,5 (Raten) ein. Treffer und Fehlschläge sind an der Antwortzeit nicht zu unterscheiden.")
     if load:
         head += (f" Unter Last anderer Mandanten sinkt Cohens d von {stats.fmt_num(quiet['d'], 2)} "
                  f"auf {stats.fmt_num(load.get('d'), 2)} (AUC {stats.fmt_num(load.get('auc'), 2)}).")
@@ -287,12 +295,15 @@ def summarize(recs, stages, cfg, settings):
     # --- Methoden- und Ergebnistabelle
     def mrow(label, m):
         if not m or "auc" not in m:
-            return [label, "–", "–", "–", "–", "–"]
-        return [label, m["n_hit"] + m["n_miss"], stats.fmt_num(m["auc"], 3), stats.fmt_num(m["d"], 2),
-                stats.fmt_pct(100 * (m.get("accuracy") or 0), 0),
+            return [label, "–", "–", "–", "–", "–", "–"]
+        mci = m.get("auc_ci")
+        return [label, m["n_hit"] + m["n_miss"], stats.fmt_num(m["auc"], 3),
+                f"{stats.fmt_num(mci[0], 3)}–{stats.fmt_num(mci[1], 3)}" if mci else "–",
+                stats.fmt_num(m["d"], 2), stats.fmt_pct(100 * (m.get("accuracy") or 0), 0),
                 f"{stats.fmt_ms(m['ttft_hit_p50'])} / {stats.fmt_ms(m['ttft_miss_p50'])}"]
     phase_tbl = {"title": "Unterscheidbarkeit (TTFT-Seitenkanal)",
-                 "columns": ["Bedingung", "Messungen", "AUC", "Cohens d", "Trefferquote", "TTFT p50 Treffer / Fehlschlag"],
+                 "columns": ["Bedingung", "Messungen", "AUC", "95%-KI der AUC", "Cohens d", "Trefferquote",
+                             "TTFT p50 Treffer / Fehlschlag"],
                  "rows": [mrow("ruhig", quiet)] + ([mrow("unter Last", load)] if load else [])}
 
     einstellungen = {"title": "Geprüfte Einstellung",
@@ -356,11 +367,14 @@ def summarize(recs, stages, cfg, settings):
     return {
         "verdict": verdict, "headline": head,
         "security": True,
-        "kpis": {"attack_auc": {"value": round(auc, 3), "unit": "AUC (0,5 = Raten, 1,0 = perfekt)",
-                                "text": f"Cohens d {stats.fmt_num(quiet['d'], 2)}"
+        "kpis": {"attack_auc": {"value": round(auc, 3),
+                                "unit": "AUC (0,5 = Raten, 1,0 = perfekt lesbar)",
+                                "text": (f"95%-KI {stats.fmt_num(ci[0], 2)}–{stats.fmt_num(ci[1], 2)}" if ci else "")
                                         + (", cached_tokens-Leck" if leak else "")}},
-        "raw": {"auc": auc, "cohens_d": quiet["d"], "cached_token_leak": bool(leak),
+        "raw": {"auc": auc, "auc_ci": ci, "auc_ci_includes_half": includes_half,
+                "cohens_d": quiet["d"], "accuracy": quiet.get("accuracy"), "cached_token_leak": bool(leak),
                 "auc_under_load": load.get("auc") if load else None,
+                "auc_ci_under_load": load.get("auc_ci") if load else None,
                 "d_under_load": load.get("d") if load else None},
         "charts": charts,
         "tables": tables,

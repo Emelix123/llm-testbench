@@ -153,8 +153,19 @@ Der Granularitäts-Sweep reproduziert den CVE-Befund: unterhalb einer Blockgrö�
 Tokens) bleibt die AUC bei ~0,5, ab einem vollen Block springt sie gegen 1,0; `cached_tokens`
 steigt blockweise.
 
+**Verwundbar vs. gelöst (Kriterium der Arbeit, Tab. 3.4):** Zur AUC wird ein 95%-Konfidenzintervall
+per Bootstrap berechnet. Schließt das Intervall 0,5 ein, ist der Seitenkanal nicht signifikant von
+Raten unterscheidbar → **nicht verwundbar (gelöst)**. Liegt es deutlich über 0,5 → **verwundbar**.
+Gemessen gegen den Mock: ohne Salt AUC 1,00 (KI 1,00–1,00, verwundbar), mit `cache_salt` pro Mandant
+AUC ~0,58 (KI schließt 0,5 ein, gelöst).
+
 Mit cache_salt pro Mandant oder abgeschaltetem Prefix-Caching fällt die AUC auf ~0,5 zurück
 (grün). So lässt sich belegen, ob eine Gegenmaßnahme greift – ohne und mit Last.
+
+Beide Sicherheitstests zeigen in der Oberfläche ein Panel **„So funktioniert der Angriff"** (auf der
+Test-Auswahl und im Bericht): Ablauf Schritt für Schritt mit Rollen Opfer/Angreifer, gemessenem
+Signal, Maß, der Unterscheidung verwundbar/gelöst und den Originalquellen (CVE-2025-46570 /
+GHSA-4qjh-9fv9-r85r, InputSnatch arXiv:2411.18191, Song u. a.; CVE-2026-34756, vLLM Security Docs).
 
 ### Ressourcenverdrängung / Noisy Neighbor (CVE-2026-34756)
 
@@ -170,6 +181,8 @@ Anfragen. Gemessen wird dessen Latenz **ohne** und **mit** einem **Störnachbarn
   hält KV-Cache), `big_n` (großes `n`, der Hebel aus der CVE), `combined`.
 - Gemessen am Opfer: TTFT, TPOT, E2E, Goodput, Fehler und Abbrüche – ohne vs. mit Angriff,
   als Faktor (z. B. „TTFT p95 ×4,5", „Goodput 100 % → 0 %").
+- **Slowdown-Faktor S_N** (Arbeit, Gl. 6.1): Ende-zu-Ende-Verlangsamung des Opfers (E2E p95 mit/ohne
+  Angriff). Mit Ratenbegrenzung je Mandant kleiner als ohne – der Vergleich zeigt, ob sie greift.
 - **n-Grenze:** Der Test prüft per Leiter (2 … 100000), bis zu welchem `n` der Server annimmt.
   vLLM begrenzt `n` nur global (VLLM_MAX_N_SEQUENCES, Standard 16384; Empfehlung 64–128),
   nicht je Mandant – ein hoher angenommener Wert wird als Warnung ausgewiesen.

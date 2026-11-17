@@ -4,6 +4,7 @@
   import Light from '../lib/Light.svelte'
   import Chart from '../lib/Chart.svelte'
   import CostCalc from '../lib/CostCalc.svelte'
+  import AttackExplainer from '../lib/AttackExplainer.svelte'
   let { query } = $props()
   let rep = $state(null), error = $state(''), open = $state({}), refs = $state({}), pdfBusy = $state(false)
 
@@ -90,7 +91,8 @@
           {#each c.summary.notes || [] as n}<div class="notice">{n}</div>{/each}
           {#if c.summary.cpu_high_requests}<div class="notice">{c.summary.cpu_high_requests} Anfragen wurden bei Laptop-CPU ≥ 80 % gesendet – diese Messungen sind markiert, der Laptop könnte gebremst haben.</div>{/if}
           {#if c.summary.users_note}<p class="small muted">{c.summary.users_note}</p>{/if}
-          {#if c.summary.security}<div class="notice">Sicherheitstest. Nur gegen eigene Systeme mit Erlaubnis. Die Ampel bewertet aus Verteidigersicht: <b>rot = verwundbar</b>, grün = kein nutzbares Signal.</div>{/if}
+          {#if c.summary.security}<div class="notice">Sicherheitstest. Nur gegen eigene Systeme mit Erlaubnis. Die Ampel bewertet aus Verteidigersicht: <b>rot = verwundbar</b>, grün = kein nutzbares Signal / gelöst.</div>{/if}
+          {#if c.explain}<AttackExplainer explain={c.explain} />{/if}
           {#if c.summary.method_note}<p class="small muted"><b>Methode:</b> {c.summary.method_note}</p>{/if}
           {#each c.summary.charts || [] as ch}<Chart spec={ch} />{/each}
           {#each c.summary.tables || [] as t}

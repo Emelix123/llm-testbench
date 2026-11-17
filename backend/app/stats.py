@@ -329,3 +329,29 @@ def histogram(values: list[float], bins: int = 24, lo: float | None = None, hi: 
         k = min(bins - 1, max(0, int((x - lo) / w)))
         counts[k] += 1
     return [[round(lo + (k + 0.5) * w, 3), counts[k]] for k in range(bins)]
+
+
+def bootstrap_auc_ci(pos: list[float], neg: list[float], level: float = 95.0,
+                     reps: int = 1000, seed: int = 12345) -> tuple[float, float] | None:
+    """95%-Konfidenzintervall der AUC per Bootstrap (Resampling mit Zurücklegen).
+
+    Schließt das Intervall 0,5 ein, ist der Seitenkanal nicht signifikant von reinem
+    Raten unterscheidbar – das Kriterium der Arbeit für eine wirksame Gegenmaßnahme.
+    """
+    import random as _r
+    if len(pos) < 3 or len(neg) < 3:
+        return None
+    rng = _r.Random(seed)
+    aucs = []
+    np_, nn = len(pos), len(neg)
+    for _ in range(reps):
+        rp = [pos[rng.randrange(np_)] for _ in range(np_)]
+        rn = [neg[rng.randrange(nn)] for _ in range(nn)]
+        a = auc(rp, rn)
+        if a is not None:
+            aucs.append(a)
+    if not aucs:
+        return None
+    lo = pct(aucs, (100 - level) / 2)
+    hi = pct(aucs, 100 - (100 - level) / 2)
+    return (round(lo, 3), round(hi, 3))

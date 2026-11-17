@@ -6,22 +6,146 @@
   "description": "Stellt den Prefix-Caching-Seitenkanal nach: Ein Opfer sendet einen Präfix, der Angreifer misst an der Antwortzeit (TTFT) und an prompt_tokens_details.cached_tokens, ob derselbe Präfix bereits im geteilten Cache liegt. Je Einstellung (cache_salt, Prefix-Caching, Blockgröße, Last) wird gemessen, ob der Angriff funktioniert. Maße: AUC (0,5 = Raten, 1,0 = perfekt unterscheidbar, wie im CVE) und Cohens d. ACHTUNG: Nur gegen eigene Systeme mit Erlaubnis. Rot = verwundbar.",
   "estimated_duration_s": 300,
   "params": [
-    {"key": "trials", "label": "Messungen je Bedingung (Treffer/Fehlschlag)", "type": "int", "default": 60},
-    {"key": "prefix_tokens", "label": "Länge des Opfer-Präfixes (Tokens)", "type": "int", "default": 512},
-    {"key": "salt_mode", "label": "cache_salt", "type": "select", "default": "none",
-     "options": [
-       {"value": "none", "label": "keiner (Standard-vLLM: geteilter Cache – angreifbar)"},
-       {"value": "per_tenant", "label": "pro Mandant (Gateway setzt festen Salt je Mandant)"},
-       {"value": "per_request", "label": "pro Anfrage (eindeutig – schaltet Caching praktisch aus)"}
-     ]},
-    {"key": "salt_field", "label": "Feldname für den Salt im Request", "type": "string", "default": "cache_salt"},
-    {"key": "background_load", "label": "Last anderer Mandanten (parallele Anfragen, 0 = ruhig; >0 misst zusätzlich unter Last)", "type": "int", "default": 0},
-    {"key": "granularity_sweep", "label": "Block-Granularität vermessen (Sweep über Übereinstimmung)", "type": "bool", "default": true},
-    {"key": "sweep_tokens", "label": "Sweep: übereinstimmende Präfix-Längen (Tokens)", "type": "int_list", "default": [0, 8, 16, 32, 64, 128, 256, 512]},
-    {"key": "sweep_trials", "label": "Sweep: Messungen je Länge", "type": "int", "default": 25},
-    {"key": "probe_tokens", "label": "Max. Output-Tokens je Messung", "type": "int", "default": 1},
-    {"key": "auc_warn", "label": "Gelb ab AUC", "type": "float", "default": 0.6},
-    {"key": "auc_fail", "label": "Rot ab AUC", "type": "float", "default": 0.75},
-    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
-  ]
+    {
+      "key": "trials",
+      "label": "Messungen je Bedingung (Treffer/Fehlschlag)",
+      "type": "int",
+      "default": 60
+    },
+    {
+      "key": "prefix_tokens",
+      "label": "Länge des Opfer-Präfixes (Tokens)",
+      "type": "int",
+      "default": 512
+    },
+    {
+      "key": "salt_mode",
+      "label": "cache_salt",
+      "type": "select",
+      "default": "none",
+      "options": [
+        {
+          "value": "none",
+          "label": "keiner (Standard-vLLM: geteilter Cache – angreifbar)"
+        },
+        {
+          "value": "per_tenant",
+          "label": "pro Mandant (Gateway setzt festen Salt je Mandant)"
+        },
+        {
+          "value": "per_request",
+          "label": "pro Anfrage (eindeutig – schaltet Caching praktisch aus)"
+        }
+      ]
+    },
+    {
+      "key": "salt_field",
+      "label": "Feldname für den Salt im Request",
+      "type": "string",
+      "default": "cache_salt"
+    },
+    {
+      "key": "background_load",
+      "label": "Last anderer Mandanten (parallele Anfragen, 0 = ruhig; >0 misst zusätzlich unter Last)",
+      "type": "int",
+      "default": 0
+    },
+    {
+      "key": "granularity_sweep",
+      "label": "Block-Granularität vermessen (Sweep über Übereinstimmung)",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "sweep_tokens",
+      "label": "Sweep: übereinstimmende Präfix-Längen (Tokens)",
+      "type": "int_list",
+      "default": [
+        0,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512
+      ]
+    },
+    {
+      "key": "sweep_trials",
+      "label": "Sweep: Messungen je Länge",
+      "type": "int",
+      "default": 25
+    },
+    {
+      "key": "probe_tokens",
+      "label": "Max. Output-Tokens je Messung",
+      "type": "int",
+      "default": 1
+    },
+    {
+      "key": "auc_warn",
+      "label": "Gelb ab AUC",
+      "type": "float",
+      "default": 0.6
+    },
+    {
+      "key": "auc_fail",
+      "label": "Rot ab AUC",
+      "type": "float",
+      "default": 0.75
+    },
+    {
+      "key": "seed",
+      "label": "Seed (leer = zufällig)",
+      "type": "int",
+      "default": null
+    }
+  ],
+  "explain": {
+    "kurz": "Mandanten teilen sich den Prefix-Cache. Wer denselben Präfix schon gesendet hat, wird schneller beantwortet – daran erkennt ein Angreifer fremde Eingaben.",
+    "cve": "CVE-2025-46570 · InputSnatch (arXiv:2411.18191) · Song u. a.",
+    "ablauf": [
+      {
+        "rolle": "system",
+        "text": "Prefix Caching speichert verarbeitete Blöcke und teilt sie – erkannt allein an Tokens und Präfix, nicht am Mandanten. Alle Anfragen nutzen denselben Cache."
+      },
+      {
+        "rolle": "opfer",
+        "text": "Mandant A (Opfer) sendet eine Anfrage. Ihre Präfix-Blöcke landen im gemeinsamen Cache."
+      },
+      {
+        "rolle": "angreifer",
+        "text": "Mandant B (Angreifer) sendet einen geratenen Präfix und misst die Zeit bis zum ersten Token (TTFT)."
+      },
+      {
+        "rolle": "angreifer",
+        "text": "Liegt der Präfix schon im Cache (A war da), entfällt das Prefill → TTFT ist kurz. Sonst lang. So erkennt B, ob A denselben Präfix gesendet hat."
+      },
+      {
+        "rolle": "angreifer",
+        "text": "B erweitert den Präfix Token für Token bzw. Block für Block und rekonstruiert fremde Eingaben. Liefert der Server cached_tokens, liest B die Trefferlänge direkt ab – ganz ohne Zeitmessung."
+      }
+    ],
+    "signal": "Gemessen: TTFT (Zeit bis erstes Token) und prompt_tokens_details.cached_tokens. Treffer = schneller bzw. mehr cached_tokens.",
+    "mass": "AUC: 0,5 = Angreifer rät (sicher), 1,0 = Treffer und Fehlschlag perfekt unterscheidbar (verwundbar). Dazu Cohens d (Effektstärke) und die Trefferquote.",
+    "verwundbar": "ROT: AUC deutlich über 0,5 (95%-Konfidenzintervall oberhalb 0,5) oder cached_tokens verrät Treffer direkt.",
+    "geloest": "GRÜN: Das 95%-Konfidenzintervall der AUC schließt 0,5 ein – der Angreifer ist nicht besser als Raten. Erreicht durch cache_salt pro Mandant (vLLM ≥ 0.9) oder abgeschaltetes Prefix-Caching.",
+    "quellen": [
+      {
+        "ref": "CVE-2025-46570 (GHSA-4qjh-9fv9-r85r)",
+        "text": "Timing-Seitenkanal im Chunk-Prefix-Cache; AUC 0,571 (1 Token) → 0,99 (8 Tokens, chunk_size=2); Fix in vLLM 0.9.0 (cache_salt).",
+        "url": "https://github.com/vllm-project/vllm/security/advisories/GHSA-4qjh-9fv9-r85r"
+      },
+      {
+        "ref": "Zheng u. a., InputSnatch",
+        "text": "Feld-für-Feld-Rekonstruktion auf vLLM; 87 % Trefferlänge, 62 % exakte Krankheit im medizinischen Q&A; Prefill-Zeit trennt Treffer/Fehlschlag.",
+        "url": "https://arxiv.org/abs/2411.18191"
+      },
+      {
+        "ref": "Song u. a.",
+        "text": "Token-weise Rekonstruktion auf SGLang; 99 % je Token, 89 % Systemprompt-Token, ~113 Anfragen/Token."
+      }
+    ]
+  }
 }

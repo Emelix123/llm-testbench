@@ -702,9 +702,12 @@ def batch_report(run_ids: list[str]) -> dict:
                 # Mehrere Tests liefern denselben Wert (z. B. mehrere Lastprofile): konservativ.
                 if cur is None or (key != "eur_per_m" and k[key]["value"] < cur["value"]):
                     kpi[key] = k[key]
+        mod = modules().get(cfg.get("test"))
+        explain = mod.manifest.get("explain") if mod else None
         cards.append({"run_id": rid, "test": cfg.get("test"), "name": cfg.get("test_name"),
                       "status": cfg.get("status"), "verdict": s.get("verdict"),
-                      "headline": s.get("headline"), "summary": s, "config": _public_cfg(cfg)})
+                      "headline": s.get("headline"), "summary": s, "config": _public_cfg(cfg),
+                      "explain": explain})
     cards.sort(key=lambda c: (c["config"].get("batch_index") is None, c["config"].get("batch_index") or 0,
                               c["run_id"]))
     if total:

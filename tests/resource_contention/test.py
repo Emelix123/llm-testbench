@@ -184,6 +184,8 @@ def summarize(recs, stages, cfg, settings):
 
     ttft_ratio = _ratio(aa["ttft_ms"]["p95"], ab["ttft_ms"]["p95"])
     tpot_ratio = _ratio(aa["tpot_ms"]["p95"], ab["tpot_ms"]["p95"])
+    # Slowdown-Faktor S_N (Arbeit, Gl. 6.1): Ende-zu-Ende-Verlangsamung des Opfers durch den Störnachbarn
+    slowdown = _ratio(aa["e2e_ms"]["p95"], ab["e2e_ms"]["p95"])
     gp_base = ab.get("goodput_pct")
     gp_atk = aa.get("goodput_pct")
     victim_errors = sum(1 for r in atk if not stats.is_ok(r))
@@ -224,15 +226,16 @@ def summarize(recs, stages, cfg, settings):
 
     mode_txt = {"flood": "Flut", "long": "lange Anfragen", "big_n": f"großes n={p['attack_n']}",
                 "combined": "Flut + großes n"}[p["attack_mode"]]
-    head = (f"Störnachbar ({mode_txt}, {p['attack_concurrency']} parallel): TTFT p95 des Opfers "
+    vlabel = "VERWUNDBAR" if verdict == "rot" else ("NICHT VERWUNDBAR" if verdict == "gruen" else "Teilweise")
+    head = (f"{vlabel} ({mode_txt}, {p['attack_concurrency']} parallel): Slowdown-Faktor S_N "
+            f"×{stats.fmt_num(slowdown, 1) if slowdown else '–'} (Ende-zu-Ende), TTFT p95 des Opfers "
             f"{stats.fmt_ms(ab['ttft_ms']['p95'])} → {stats.fmt_ms(aa['ttft_ms']['p95'])}"
             f"{f' (×{stats.fmt_num(ttft_ratio, 1)})' if ttft_ratio else ''}, "
-            f"TPOT p95 ×{stats.fmt_num(tpot_ratio, 1) if tpot_ratio else '–'}, "
             f"Goodput {stats.fmt_pct(gp_base, 0)} → {stats.fmt_pct(gp_atk, 0)}.")
     if preempt:
         head += f" {preempt} Opfer-Anfragen unterbrochen/Timeout."
     if verdict == "gruen":
-        head += " Geringe Beeinträchtigung – Begrenzung je Mandant scheint zu greifen."
+        head += " Geringe Verdrängung – Ratenbegrenzung je Mandant scheint zu greifen."
     if evicted and evicted["verdraengt"] is True:
         head += " Der gecachte Präfix des Opfers wurde verdrängt (cached_tokens fallen)."
     if n_uncapped:
@@ -261,7 +264,10 @@ def summarize(recs, stages, cfg, settings):
     tables = [
         {"title": "Opfer-Latenz: ohne vs. mit Störnachbar",
          "columns": ["Phase", "Anfragen", "TTFT p50", "TTFT p95", "TPOT p95", "E2E p95", "Goodput", "Fehler"],
-         "rows": [crow("ohne Angriff", ab), crow("unter Angriff", aa)]},
+         "rows": [crow("ohne Angriff", ab), crow("unter Angriff", aa),
+                  ["Slowdown-Faktor S_N", "", "", f"×{stats.fmt_num(ttft_ratio, 2)}" if ttft_ratio else "–",
+                   f"×{stats.fmt_num(tpot_ratio, 2)}" if tpot_ratio else "–",
+                   f"×{stats.fmt_num(slowdown, 2)}" if slowdown else "–", "", ""]]},
         {"title": "Geprüfte Einstellung",
          "columns": ["Parameter", "Wert"],
          "rows": [["Angriffsart", mode_txt], ["Störnachbar parallel", stats.fmt_num(p["attack_concurrency"])],
@@ -285,10 +291,11 @@ def summarize(recs, stages, cfg, settings):
 
     return {
         "verdict": verdict, "headline": head, "security": True,
-        "kpis": {"victim_ttft_factor": {"value": round(ttft_ratio, 2) if ttft_ratio else None,
-                                        "unit": "× TTFT p95 des Opfers",
-                                        "text": f"Goodput {stats.fmt_pct(gp_base, 0)} → {stats.fmt_pct(gp_atk, 0)}"}},
-        "raw": {"ttft_p95_ratio": ttft_ratio, "tpot_p95_ratio": tpot_ratio,
+        "kpis": {"slowdown_factor": {"value": round(slowdown, 2) if slowdown else None,
+                                     "unit": "Slowdown-Faktor S_N des Opfers",
+                                     "text": f"TTFT ×{stats.fmt_num(ttft_ratio, 1)}, Goodput "
+                                             f"{stats.fmt_pct(gp_base, 0)} → {stats.fmt_pct(gp_atk, 0)}"}},
+        "raw": {"slowdown_factor_e2e": slowdown, "ttft_p95_ratio": ttft_ratio, "tpot_p95_ratio": tpot_ratio,
                 "goodput_base": gp_base, "goodput_attack": gp_atk, "victim_preempted": preempt,
                 "n_uncapped": n_uncapped, "largest_n_accepted": lok.get("n"),
                 "prefix_evicted": bool(evicted and evicted["verdraengt"])},

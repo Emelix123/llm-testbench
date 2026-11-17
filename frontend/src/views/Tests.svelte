@@ -2,12 +2,13 @@
   import { onMount } from 'svelte'
   import { api, dur } from '../lib/api.js'
   import ParamField from '../lib/ParamField.svelte'
+  import AttackExplainer from '../lib/AttackExplainer.svelte'
   import { connect, live } from '../lib/state.svelte.js'
   let { query } = $props()
   const clone = (x) => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)))
 
   let tests = $state([]), suites = $state([]), profiles = $state([])
-  let profileId = $state(''), selected = $state({}), params = $state({}), expanded = $state({})
+  let profileId = $state(''), selected = $state({}), params = $state({}), expanded = $state({}), explained = $state({})
   let estimate = $state(null), error = $state(''), suiteName = $state(''), suite = $state(null), makeReport = $state(false)
 
   onMount(async () => {
@@ -86,8 +87,10 @@
           <input type="checkbox" bind:checked={selected[t.id]} />
           <span class="grow"><b>{t.name}</b><br /><span class="small muted">{t.description}</span></span>
         </label>
+        {#if t.explain}<button class="link" onclick={() => (explained[t.id] = !explained[t.id])}>{explained[t.id] ? 'Angriff zu' : 'Angriff erklärt'}</button>{/if}
         <button class="link" onclick={() => (expanded[t.id] = !expanded[t.id])}>{expanded[t.id] ? 'Parameter zu' : 'Parameter'}</button>
       </div>
+      {#if explained[t.id] && t.explain}<AttackExplainer explain={t.explain} open={true} />{/if}
       {#if expanded[t.id] && params[t.id]}
         <div class="grid2" style="margin-top:.8rem">
           {#each t.params as p}
