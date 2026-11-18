@@ -138,5 +138,51 @@
         "url": "https://docs.vllm.ai/en/latest/usage/security.html"
       }
     ]
+  },
+  "settings": {
+    "vllm": [
+      {
+        "name": "VLLM_MAX_N_SEQUENCES",
+        "wirkung": "Obergrenze für n (Standard 16384; Empfehlung 64–128) – gilt global, nicht je Mandant."
+      },
+      {
+        "name": "--max-num-seqs",
+        "wirkung": "Max. gleichzeitig laufende Sequenzen = die echte Parallelität."
+      },
+      {
+        "name": "--max-num-batched-tokens",
+        "wirkung": "Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill."
+      },
+      {
+        "name": "--gpu-memory-utilization",
+        "wirkung": "Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen."
+      },
+      {
+        "name": "--scheduling-policy {fcfs,priority}",
+        "wirkung": "Planungsstrategie; fcfs lässt die Warteschlange bei Überlast wachsen."
+      },
+      {
+        "name": "--max-num-queued-reqs",
+        "wirkung": "Begrenzt wartende + laufende Anfragen zusammen."
+      },
+      {
+        "name": "--preemption-mode {recompute,swap}",
+        "wirkung": "Wie vLLM bei Speichermangel unterbrochene Anfragen behandelt."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "Key/Team: rpm, tpm, max_parallel_requests",
+        "wirkung": "Ratenbegrenzung je Mandant – die eigentliche Gegenmaßnahme."
+      },
+      {
+        "name": "max_budget, budget_duration",
+        "wirkung": "Budget je Mandant."
+      },
+      {
+        "name": "gemeinsamer Zähler über Redis",
+        "wirkung": "Sonst zählt jede Gateway-Instanz für sich und die Grenze greift nicht global."
+      }
+    ]
   }
 }

@@ -27,5 +27,43 @@
       "type": "int",
       "default": 300
     }
-  ]
+  ],
+  "settings": {
+    "vllm": [
+      {
+        "name": "--enable-prefix-caching / --no-enable-prefix-caching",
+        "wirkung": "Prefix-Cache an/aus (in neuem vLLM meist standardmäßig an)."
+      },
+      {
+        "name": "--enable-prompt-tokens-details",
+        "wirkung": "Liefert prompt_tokens_details.cached_tokens im usage; sonst fehlt der Cache-Wert."
+      },
+      {
+        "name": "--max-model-len",
+        "wirkung": "Beworbene/erzwungene Kontextlänge."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "x-litellm-* Antwort-Header",
+        "wirkung": "Overhead, Retries, Fallbacks, Rate-Limits – vom Tool ausgelesen."
+      },
+      {
+        "name": "Key/Team: rpm, tpm, max_parallel_requests",
+        "wirkung": "Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit."
+      },
+      {
+        "name": "litellm_settings.drop_params / additional_drop_params",
+        "wirkung": "Ob unbekannte Parameter (ignore_eos, min_tokens, cache_salt) verworfen oder an vLLM durchgereicht werden."
+      },
+      {
+        "name": "litellm_settings.cache / cache_params",
+        "wirkung": "Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität."
+      },
+      {
+        "name": "stream_options.include_usage-Passthrough",
+        "wirkung": "Muss durchgereicht werden, damit usage im Stream ankommt."
+      }
+    ]
+  }
 }

@@ -147,5 +147,39 @@
         "text": "Token-weise Rekonstruktion auf SGLang; 99 % je Token, 89 % Systemprompt-Token, ~113 Anfragen/Token."
       }
     ]
+  },
+  "settings": {
+    "vllm": [
+      {
+        "name": "--enable-prefix-caching / --no-enable-prefix-caching",
+        "wirkung": "Die Schwachstelle selbst; Abschalten schließt den Seitenkanal (kostet aber den Cache-Nutzen)."
+      },
+      {
+        "name": "--block-size",
+        "wirkung": "Tokens je KV-Block (z. B. 16); bestimmt die Granularität von Cache-Treffern."
+      },
+      {
+        "name": "--enable-prompt-tokens-details",
+        "wirkung": "Schaltet den cached_tokens-Oracle frei; Weglassen entzieht dem Angreifer dieses direkte Signal."
+      },
+      {
+        "name": "cache_salt (Request-Feld, ab vLLM 0.9.0)",
+        "wirkung": "Fix: nur Anfragen mit gleichem Salt teilen Blöcke."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "async_pre_call_hook",
+        "wirkung": "Setzt cache_salt je Mandant – die eigentliche Gegenmaßnahme im Gateway."
+      },
+      {
+        "name": "allowed_openai_params / drop_params",
+        "wirkung": "Entscheidet, ob cache_salt bis vLLM durchkommt (vgl. CVE-2026-105752)."
+      },
+      {
+        "name": "Positivliste weitergeleiteter Endpunkte",
+        "wirkung": "Den Präfix-Cache-Zählerendpunkt von vLLM NICHT weiterleiten."
+      }
+    ]
   }
 }

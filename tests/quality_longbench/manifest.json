@@ -1,12 +1,66 @@
 {
-  "id": "quality_longbench", "order": 340, "name": "Qualität: LongBench v2 (Langkontext)", "category": "Qualität",
+  "id": "quality_longbench",
+  "order": 340,
+  "name": "Qualität: LongBench v2 (Langkontext)",
+  "category": "Qualität",
   "description": "Multiple-Choice-Fragen aus LongBench v2 (503 Fragen, Kontexte von 8k bis 2 Mio. Wörtern). Verwendet werden nur Fragen, deren Kontext in den max. Kontext passt; zu lange Kontexte werden in der Mitte gekürzt (wie im Original). Zufallsniveau: 25 %.",
   "estimated_duration_s": 1800,
   "params": [
-    {"key": "questions", "label": "Anzahl Fragen", "type": "int", "default": 50},
-    {"key": "truncate", "label": "Zu lange Kontexte in der Mitte kürzen", "type": "bool", "default": true},
-    {"key": "concurrency", "label": "Parallelität", "type": "int", "default": 4},
-    {"key": "max_drop_pts", "label": "Rot ab Verschlechterung um (Punkte)", "type": "float", "default": 5},
-    {"key": "seed", "label": "Seed (fest, damit Referenz und Vergleich dieselben Fragen nutzen)", "type": "int", "default": 1234}
-  ]
+    {
+      "key": "questions",
+      "label": "Anzahl Fragen",
+      "type": "int",
+      "default": 50
+    },
+    {
+      "key": "truncate",
+      "label": "Zu lange Kontexte in der Mitte kürzen",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "key": "concurrency",
+      "label": "Parallelität",
+      "type": "int",
+      "default": 4
+    },
+    {
+      "key": "max_drop_pts",
+      "label": "Rot ab Verschlechterung um (Punkte)",
+      "type": "float",
+      "default": 5
+    },
+    {
+      "key": "seed",
+      "label": "Seed (fest, damit Referenz und Vergleich dieselben Fragen nutzen)",
+      "type": "int",
+      "default": 1234
+    }
+  ],
+  "settings": {
+    "vllm": [
+      {
+        "name": "--max-model-len",
+        "wirkung": "Beworbene/erzwungene Kontextlänge."
+      },
+      {
+        "name": "--rope-scaling",
+        "wirkung": "Langkontext über native Länge."
+      },
+      {
+        "name": "--quantization {awq,gptq,fp8,…}",
+        "wirkung": "Quantisierung – Hauptverdächtiger für Qualitätsverlust."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "litellm_settings.cache / cache_params",
+        "wirkung": "Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität."
+      },
+      {
+        "name": "request_timeout / timeout",
+        "wirkung": "Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast)."
+      }
+    ]
+  }
 }

@@ -227,6 +227,256 @@ ohne Browser bleibt der HTML-Bericht, der sich drucken lässt.
 URL von LiteLLM, Modell, Tokenizer (Hugging-Face-Name oder Pfad zu `tokenizer.json`), max. Kontext,
 API-Key und die Häkchen „Vision-Modell“ und „Reasoning-Modell“ (steuern Multimodal- und Reasoning-Prüfung).
 
+## vLLM- und LiteLLM-Einstellungen je Test
+
+Jeder Test nennt die Stellschrauben an vLLM (Inferenz-Engine) und LiteLLM (Gateway), die sein
+Ergebnis beeinflussen. In der Oberflaeche steht die Liste je Test unter „Einstellungen“ (Test-Auswahl
+und Bericht). vLLM-Flags sind versionsabhaengig – vor dem Einsatz die Doku der eingesetzten Version pruefen.
+
+### Leistung & Kapazität
+
+**Schnellcheck**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--enable-prefix-caching / --no-enable-prefix-caching` | Prefix-Cache an/aus (in neuem vLLM meist standardmäßig an). |
+| vLLM | `--enable-prompt-tokens-details` | Liefert prompt_tokens_details.cached_tokens im usage; sonst fehlt der Cache-Wert. |
+| vLLM | `--max-model-len` | Beworbene/erzwungene Kontextlänge. |
+| LiteLLM | `x-litellm-* Antwort-Header` | Overhead, Retries, Fallbacks, Rate-Limits – vom Tool ausgelesen. |
+| LiteLLM | `Key/Team: rpm, tpm, max_parallel_requests` | Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit. |
+| LiteLLM | `litellm_settings.drop_params / additional_drop_params` | Ob unbekannte Parameter (ignore_eos, min_tokens, cache_salt) verworfen oder an vLLM durchgereicht werden. |
+| LiteLLM | `litellm_settings.cache / cache_params` | Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität. |
+| LiteLLM | `stream_options.include_usage-Passthrough` | Muss durchgereicht werden, damit usage im Stream ankommt. |
+
+**Parallelitäts-Test**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--max-num-seqs` | Max. gleichzeitig laufende Sequenzen = die echte Parallelität. |
+| vLLM | `--max-num-batched-tokens` | Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill. |
+| vLLM | `--gpu-memory-utilization` | Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen. |
+| vLLM | `--enable-chunked-prefill` | Prefill großer Prompts in Stücken; glättet TTFT unter Last. |
+| vLLM | `--kv-cache-dtype` | z. B. fp8 vergrößert den KV-Cache → mehr Parallelität. |
+| LiteLLM | `Key/Team: rpm, tpm, max_parallel_requests` | Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit. |
+| LiteLLM | `num_retries, fallbacks, allowed_fails, cooldown_time` | Stille Wiederholungen/Fallbacks (x-litellm-attempted-retries/-fallbacks). |
+
+**Kapazitäts-Sweep**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--max-num-seqs` | Max. gleichzeitig laufende Sequenzen = die echte Parallelität. |
+| vLLM | `--max-num-batched-tokens` | Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill. |
+| vLLM | `--gpu-memory-utilization` | Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen. |
+| vLLM | `--enable-chunked-prefill` | Prefill großer Prompts in Stücken; glättet TTFT unter Last. |
+| vLLM | `--scheduling-policy {fcfs,priority}` | Planungsstrategie; fcfs lässt die Warteschlange bei Überlast wachsen. |
+| vLLM | `--max-model-len` | Beworbene/erzwungene Kontextlänge. |
+| LiteLLM | `Key/Team: rpm, tpm, max_parallel_requests` | Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit. |
+| LiteLLM | `litellm_settings.drop_params / additional_drop_params` | Ob unbekannte Parameter (ignore_eos, min_tokens, cache_salt) verworfen oder an vLLM durchgereicht werden. |
+| LiteLLM | `request_timeout / timeout` | Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast). |
+
+**Rate-Test (offene Last)**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--max-num-seqs` | Max. gleichzeitig laufende Sequenzen = die echte Parallelität. |
+| vLLM | `--max-num-batched-tokens` | Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill. |
+| vLLM | `--scheduling-policy {fcfs,priority}` | Planungsstrategie; fcfs lässt die Warteschlange bei Überlast wachsen. |
+| vLLM | `--gpu-memory-utilization` | Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen. |
+| LiteLLM | `Key/Team: rpm, tpm, max_parallel_requests` | Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit. |
+| LiteLLM | `request_timeout / timeout` | Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast). |
+
+**Kontextlängen-Matrix**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--max-model-len` | Beworbene/erzwungene Kontextlänge. |
+| vLLM | `--rope-scaling` | Kontextverlängerung über die native Länge hinaus. |
+| vLLM | `--enable-chunked-prefill` | Prefill großer Prompts in Stücken; glättet TTFT unter Last. |
+| vLLM | `--max-num-batched-tokens` | Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill. |
+| vLLM | `--block-size` | Tokens je KV-Block (z. B. 16); bestimmt die Granularität von Cache-Treffern. |
+| LiteLLM | `request_timeout / timeout` | Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast). |
+| LiteLLM | `context_window_fallbacks` | Ausweichmodell bei zu langem Kontext. |
+
+**Cache-Nutzen**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--enable-prefix-caching / --no-enable-prefix-caching` | Prefix-Cache an/aus (in neuem vLLM meist standardmäßig an). |
+| vLLM | `--block-size` | Tokens je KV-Block (z. B. 16); bestimmt die Granularität von Cache-Treffern. |
+| vLLM | `--enable-prompt-tokens-details` | Liefert prompt_tokens_details.cached_tokens im usage; sonst fehlt der Cache-Wert. |
+| vLLM | `--gpu-memory-utilization` | Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen. |
+| LiteLLM | `litellm_settings.cache / cache_params` | Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität. |
+| LiteLLM | `cache_salt-Passthrough (Hook)` | Salt verhindert Cache-Treffer; für den Nutzen-Test ohne Salt messen. |
+
+**Kosten je Token-Art**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--enable-prefix-caching / --no-enable-prefix-caching` | Prefix-Cache an/aus (in neuem vLLM meist standardmäßig an). |
+| vLLM | `--max-num-seqs` | Max. gleichzeitig laufende Sequenzen = die echte Parallelität. |
+| vLLM | `--enable-chunked-prefill` | Prefill großer Prompts in Stücken; glättet TTFT unter Last. |
+| vLLM | `--kv-cache-dtype` | z. B. fp8 vergrößert den KV-Cache → mehr Parallelität. |
+| LiteLLM | `litellm_settings.drop_params / additional_drop_params` | Ob unbekannte Parameter (ignore_eos, min_tokens, cache_salt) verworfen oder an vLLM durchgereicht werden. |
+
+### Konfiguration & Funktionen
+
+**Konfiguration & Funktionen**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--enable-auto-tool-choice + --tool-call-parser {hermes,mistral,llama3_json,…}` | Tool Calling: Parser passend zum Modell. |
+| vLLM | `--guided-decoding-backend {auto,xgrammar,guidance,outlines}` | Structured Output: erzwingt gültiges JSON nach Schema. |
+| vLLM | `--reasoning-parser {deepseek_r1,qwen3,…}` | Trennt den Denk-Teil in reasoning_content. |
+| vLLM | `--chat-template / --chat-template-content-format` | Chat-Template: System-Prompt und Verlauf. |
+| vLLM | `--max-model-len` | Beworbene/erzwungene Kontextlänge. |
+| vLLM | `--limit-mm-per-prompt` | Bilder je Prompt (Multimodal). |
+| vLLM | `--seed, --max-logprobs` | Determinismus bei temperature 0 bzw. logprobs. |
+| LiteLLM | `litellm_settings.drop_params / additional_drop_params` | Ob unbekannte Parameter (ignore_eos, min_tokens, cache_salt) verworfen oder an vLLM durchgereicht werden. |
+| LiteLLM | `litellm_settings.cache / cache_params` | Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität. |
+| LiteLLM | `allowed_openai_params` | Erlaubt ignore_eos/min_tokens/cache_salt in der Durchreichung. |
+| LiteLLM | `--served-model-name / /key/info` | Steckbrief: Modellname und Key-Limits. |
+
+### Stabilität & Betrieb
+
+**Dauerlast**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--max-num-seqs` | Max. gleichzeitig laufende Sequenzen = die echte Parallelität. |
+| vLLM | `--gpu-memory-utilization` | Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen. |
+| vLLM | `--scheduling-policy {fcfs,priority}` | Planungsstrategie; fcfs lässt die Warteschlange bei Überlast wachsen. |
+| vLLM | `--preemption-mode {recompute,swap}` | Wie vLLM bei Speichermangel unterbrochene Anfragen behandelt. |
+| vLLM | `--swap-space` | CPU-Auslagerung für den KV-Cache. |
+| vLLM | `--max-num-queued-reqs` | Begrenzt wartende + laufende Anfragen zusammen. |
+| LiteLLM | `Key/Team: rpm, tpm, max_parallel_requests` | Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit. |
+| LiteLLM | `request_timeout / timeout` | Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast). |
+| LiteLLM | `num_retries, fallbacks, allowed_fails, cooldown_time` | Stille Wiederholungen/Fallbacks (x-litellm-attempted-retries/-fallbacks). |
+
+**Lastspitze**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--max-num-seqs` | Max. gleichzeitig laufende Sequenzen = die echte Parallelität. |
+| vLLM | `--gpu-memory-utilization` | Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen. |
+| vLLM | `--scheduling-policy {fcfs,priority}` | Planungsstrategie; fcfs lässt die Warteschlange bei Überlast wachsen. |
+| vLLM | `--preemption-mode {recompute,swap}` | Wie vLLM bei Speichermangel unterbrochene Anfragen behandelt. |
+| vLLM | `--max-num-queued-reqs` | Begrenzt wartende + laufende Anfragen zusammen. |
+| LiteLLM | `Key/Team: rpm, tpm, max_parallel_requests` | Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit. |
+| LiteLLM | `request_timeout / timeout` | Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast). |
+| LiteLLM | `num_retries, fallbacks, allowed_fails, cooldown_time` | Stille Wiederholungen/Fallbacks (x-litellm-attempted-retries/-fallbacks). |
+
+**Überlast**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--max-num-seqs` | Max. gleichzeitig laufende Sequenzen = die echte Parallelität. |
+| vLLM | `--gpu-memory-utilization` | Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen. |
+| vLLM | `--scheduling-policy {fcfs,priority}` | Planungsstrategie; fcfs lässt die Warteschlange bei Überlast wachsen. |
+| vLLM | `--preemption-mode {recompute,swap}` | Wie vLLM bei Speichermangel unterbrochene Anfragen behandelt. |
+| vLLM | `--max-num-queued-reqs` | Begrenzt wartende + laufende Anfragen zusammen. |
+| LiteLLM | `Key/Team: rpm, tpm, max_parallel_requests` | Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit. |
+| LiteLLM | `request_timeout / timeout` | Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast). |
+| LiteLLM | `num_retries, fallbacks, allowed_fails, cooldown_time` | Stille Wiederholungen/Fallbacks (x-litellm-attempted-retries/-fallbacks). |
+
+**Grenzwerte**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `VLLM_MAX_N_SEQUENCES (Umgebungsvariable)` | Obergrenze für n (Standard 16384; Empfehlung öffentlich 64–128). |
+| vLLM | `--max-model-len` | Beworbene/erzwungene Kontextlänge. |
+| vLLM | `--limit-mm-per-prompt` | Bilder je Prompt. |
+| vLLM | `--max-num-batched-tokens` | Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill. |
+| LiteLLM | `Key/Team: rpm, tpm, max_parallel_requests` | Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit. |
+| LiteLLM | `litellm_settings.drop_params / additional_drop_params` | Ob unbekannte Parameter (ignore_eos, min_tokens, cache_salt) verworfen oder an vLLM durchgereicht werden. |
+
+**Kaltstart**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--load-format` | Format/Tempo des Modell-Ladens. |
+| vLLM | `--enforce-eager` | Ohne CUDA-Graph-Aufwärmung – erste Anfragen langsamer. |
+| vLLM | `--enable-prefix-caching / --no-enable-prefix-caching` | Prefix-Cache an/aus (in neuem vLLM meist standardmäßig an). |
+| LiteLLM | `request_timeout / timeout` | Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast). |
+
+### Qualität
+
+**Qualität: eigene Kundenaufgaben**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--quantization {awq,gptq,fp8,…}` | Quantisierung – Hauptverdächtiger für Qualitätsverlust. |
+| vLLM | `--dtype` | Rechen-Datentyp. |
+| vLLM | `--kv-cache-dtype` | z. B. fp8 vergrößert den KV-Cache → mehr Parallelität. |
+| vLLM | `--seed` | Reproduzierbarkeit. |
+| LiteLLM | `litellm_settings.cache / cache_params` | Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität. |
+
+**Qualität: Konsistenz unter Last**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--max-num-seqs` | Max. gleichzeitig laufende Sequenzen = die echte Parallelität. |
+| vLLM | `--enable-chunked-prefill` | Prefill großer Prompts in Stücken; glättet TTFT unter Last. |
+| vLLM | `--seed` | Determinismus. |
+| vLLM | `--kv-cache-dtype` | z. B. fp8 vergrößert den KV-Cache → mehr Parallelität. |
+| LiteLLM | `litellm_settings.cache / cache_params` | Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität. |
+
+**Qualität: Tool Calling (BFCL-Stil)**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--enable-auto-tool-choice + --tool-call-parser` | Tool Calling korrekt konfiguriert. |
+| vLLM | `--quantization {awq,gptq,fp8,…}` | Quantisierung – Hauptverdächtiger für Qualitätsverlust. |
+| LiteLLM | `litellm_settings.drop_params / additional_drop_params` | Ob unbekannte Parameter (ignore_eos, min_tokens, cache_salt) verworfen oder an vLLM durchgereicht werden. |
+| LiteLLM | `litellm_settings.cache / cache_params` | Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität. |
+
+**Qualität: lm-evaluation-harness**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--quantization {awq,gptq,fp8,…}` | Quantisierung – Hauptverdächtiger für Qualitätsverlust. |
+| vLLM | `--max-model-len` | Beworbene/erzwungene Kontextlänge. |
+| vLLM | `--dtype` | Rechen-Datentyp. |
+| LiteLLM | `litellm_settings.cache / cache_params` | Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität. |
+
+**Qualität: LongBench v2 (Langkontext)**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--max-model-len` | Beworbene/erzwungene Kontextlänge. |
+| vLLM | `--rope-scaling` | Langkontext über native Länge. |
+| vLLM | `--quantization {awq,gptq,fp8,…}` | Quantisierung – Hauptverdächtiger für Qualitätsverlust. |
+| LiteLLM | `litellm_settings.cache / cache_params` | Antwort-Cache von LiteLLM – sollte für Messungen AUS sein, sonst verfälscht er TTFT und Qualität. |
+| LiteLLM | `request_timeout / timeout` | Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast). |
+
+### Sicherheit (Mandantentrennung)
+
+**Prefix-Cache-Seitenkanal (CVE-2025-46570)**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `--enable-prefix-caching / --no-enable-prefix-caching` | Die Schwachstelle selbst; Abschalten schließt den Seitenkanal (kostet aber den Cache-Nutzen). |
+| vLLM | `--block-size` | Tokens je KV-Block (z. B. 16); bestimmt die Granularität von Cache-Treffern. |
+| vLLM | `--enable-prompt-tokens-details` | Schaltet den cached_tokens-Oracle frei; Weglassen entzieht dem Angreifer dieses direkte Signal. |
+| vLLM | `cache_salt (Request-Feld, ab vLLM 0.9.0)` | Fix: nur Anfragen mit gleichem Salt teilen Blöcke. |
+| LiteLLM | `async_pre_call_hook` | Setzt cache_salt je Mandant – die eigentliche Gegenmaßnahme im Gateway. |
+| LiteLLM | `allowed_openai_params / drop_params` | Entscheidet, ob cache_salt bis vLLM durchkommt (vgl. CVE-2026-105752). |
+| LiteLLM | `Positivliste weitergeleiteter Endpunkte` | Den Präfix-Cache-Zählerendpunkt von vLLM NICHT weiterleiten. |
+
+**Ressourcenverdrängung / Noisy Neighbor (CVE-2026-34756)**
+
+| Ebene | Einstellung | Wirkung |
+|---|---|---|
+| vLLM | `VLLM_MAX_N_SEQUENCES` | Obergrenze für n (Standard 16384; Empfehlung 64–128) – gilt global, nicht je Mandant. |
+| vLLM | `--max-num-seqs` | Max. gleichzeitig laufende Sequenzen = die echte Parallelität. |
+| vLLM | `--max-num-batched-tokens` | Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill. |
+| vLLM | `--gpu-memory-utilization` | Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen. |
+| vLLM | `--scheduling-policy {fcfs,priority}` | Planungsstrategie; fcfs lässt die Warteschlange bei Überlast wachsen. |
+| vLLM | `--max-num-queued-reqs` | Begrenzt wartende + laufende Anfragen zusammen. |
+| vLLM | `--preemption-mode {recompute,swap}` | Wie vLLM bei Speichermangel unterbrochene Anfragen behandelt. |
+| LiteLLM | `Key/Team: rpm, tpm, max_parallel_requests` | Ratenbegrenzung je Mandant – die eigentliche Gegenmaßnahme. |
+| LiteLLM | `max_budget, budget_duration` | Budget je Mandant. |
+| LiteLLM | `gemeinsamer Zähler über Redis` | Sonst zählt jede Gateway-Instanz für sich und die Grenze greift nicht global. |
+
 ## Messregeln (umgesetzt)
 
 - Zeiten als p50/p95/p99, nie als Durchschnitt; monotone Uhr (`perf_counter_ns`).

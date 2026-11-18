@@ -1,8 +1,46 @@
 {
-  "id": "limits", "order": 230, "name": "Grenzwerte", "category": "Stabilität & Betrieb",
+  "id": "limits",
+  "order": 230,
+  "name": "Grenzwerte",
+  "category": "Stabilität & Betrieb",
   "description": "Sehr großes max_tokens, n größer 1, komplexe JSON-Schemas, viele Bilder, leere Anfrage, Input über dem Kontext. Bestanden, wenn Limits sauber greifen (kein 5xx, kein Timeout) und der Server danach erreichbar bleibt.",
   "estimated_duration_s": 180,
   "params": [
-    {"key": "many_images", "label": "Anzahl Bilder (nur VL-Modelle)", "type": "int", "default": 20}
-  ]
+    {
+      "key": "many_images",
+      "label": "Anzahl Bilder (nur VL-Modelle)",
+      "type": "int",
+      "default": 20
+    }
+  ],
+  "settings": {
+    "vllm": [
+      {
+        "name": "VLLM_MAX_N_SEQUENCES (Umgebungsvariable)",
+        "wirkung": "Obergrenze für n (Standard 16384; Empfehlung öffentlich 64–128)."
+      },
+      {
+        "name": "--max-model-len",
+        "wirkung": "Beworbene/erzwungene Kontextlänge."
+      },
+      {
+        "name": "--limit-mm-per-prompt",
+        "wirkung": "Bilder je Prompt."
+      },
+      {
+        "name": "--max-num-batched-tokens",
+        "wirkung": "Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "Key/Team: rpm, tpm, max_parallel_requests",
+        "wirkung": "Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit."
+      },
+      {
+        "name": "litellm_settings.drop_params / additional_drop_params",
+        "wirkung": "Ob unbekannte Parameter (ignore_eos, min_tokens, cache_salt) verworfen oder an vLLM durchgereicht werden."
+      }
+    ]
+  }
 }

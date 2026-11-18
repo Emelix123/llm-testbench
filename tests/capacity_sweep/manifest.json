@@ -89,5 +89,47 @@
       "type": "int",
       "default": null
     }
-  ]
+  ],
+  "settings": {
+    "vllm": [
+      {
+        "name": "--max-num-seqs",
+        "wirkung": "Max. gleichzeitig laufende Sequenzen = die echte Parallelität."
+      },
+      {
+        "name": "--max-num-batched-tokens",
+        "wirkung": "Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill."
+      },
+      {
+        "name": "--gpu-memory-utilization",
+        "wirkung": "Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen."
+      },
+      {
+        "name": "--enable-chunked-prefill",
+        "wirkung": "Prefill großer Prompts in Stücken; glättet TTFT unter Last."
+      },
+      {
+        "name": "--scheduling-policy {fcfs,priority}",
+        "wirkung": "Planungsstrategie; fcfs lässt die Warteschlange bei Überlast wachsen."
+      },
+      {
+        "name": "--max-model-len",
+        "wirkung": "Beworbene/erzwungene Kontextlänge."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "Key/Team: rpm, tpm, max_parallel_requests",
+        "wirkung": "Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit."
+      },
+      {
+        "name": "litellm_settings.drop_params / additional_drop_params",
+        "wirkung": "Ob unbekannte Parameter (ignore_eos, min_tokens, cache_salt) verworfen oder an vLLM durchgereicht werden."
+      },
+      {
+        "name": "request_timeout / timeout",
+        "wirkung": "Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast)."
+      }
+    ]
+  }
 }

@@ -53,5 +53,39 @@
       "type": "int",
       "default": null
     }
-  ]
+  ],
+  "settings": {
+    "vllm": [
+      {
+        "name": "--max-num-seqs",
+        "wirkung": "Max. gleichzeitig laufende Sequenzen = die echte Parallelität."
+      },
+      {
+        "name": "--max-num-batched-tokens",
+        "wirkung": "Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill."
+      },
+      {
+        "name": "--gpu-memory-utilization",
+        "wirkung": "Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen."
+      },
+      {
+        "name": "--enable-chunked-prefill",
+        "wirkung": "Prefill großer Prompts in Stücken; glättet TTFT unter Last."
+      },
+      {
+        "name": "--kv-cache-dtype",
+        "wirkung": "z. B. fp8 vergrößert den KV-Cache → mehr Parallelität."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "Key/Team: rpm, tpm, max_parallel_requests",
+        "wirkung": "Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit."
+      },
+      {
+        "name": "num_retries, fallbacks, allowed_fails, cooldown_time",
+        "wirkung": "Stille Wiederholungen/Fallbacks (x-litellm-attempted-retries/-fallbacks)."
+      }
+    ]
+  }
 }

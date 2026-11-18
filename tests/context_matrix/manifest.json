@@ -6,11 +6,81 @@
   "description": "Gleiche Parallelität, Input 1k, 8k, 32k, 128k und Maximum. Ergebnis: TTFT, Durchsatz und tatsächlich gleichzeitig bediente Anfragen je Kontextlänge, dazu die Prefill-Geschwindigkeit.",
   "estimated_duration_s": 900,
   "params": [
-    {"key": "concurrency", "label": "Parallelität", "type": "int", "default": 32},
-    {"key": "input_lengths", "label": "Input-Längen (Tokens, 0 = Maximum)", "type": "int_list", "default": [1000, 8000, 32000, 128000, 0]},
-    {"key": "output_tokens", "label": "Output-Tokens", "type": "int", "default": 300},
-    {"key": "stage_duration_s", "label": "Dauer je Länge (s)", "type": "int", "default": 120},
-    {"key": "warmup", "label": "Aufwärm-Anfragen", "type": "int", "default": 10},
-    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
-  ]
+    {
+      "key": "concurrency",
+      "label": "Parallelität",
+      "type": "int",
+      "default": 32
+    },
+    {
+      "key": "input_lengths",
+      "label": "Input-Längen (Tokens, 0 = Maximum)",
+      "type": "int_list",
+      "default": [
+        1000,
+        8000,
+        32000,
+        128000,
+        0
+      ]
+    },
+    {
+      "key": "output_tokens",
+      "label": "Output-Tokens",
+      "type": "int",
+      "default": 300
+    },
+    {
+      "key": "stage_duration_s",
+      "label": "Dauer je Länge (s)",
+      "type": "int",
+      "default": 120
+    },
+    {
+      "key": "warmup",
+      "label": "Aufwärm-Anfragen",
+      "type": "int",
+      "default": 10
+    },
+    {
+      "key": "seed",
+      "label": "Seed (leer = zufällig)",
+      "type": "int",
+      "default": null
+    }
+  ],
+  "settings": {
+    "vllm": [
+      {
+        "name": "--max-model-len",
+        "wirkung": "Beworbene/erzwungene Kontextlänge."
+      },
+      {
+        "name": "--rope-scaling",
+        "wirkung": "Kontextverlängerung über die native Länge hinaus."
+      },
+      {
+        "name": "--enable-chunked-prefill",
+        "wirkung": "Prefill großer Prompts in Stücken; glättet TTFT unter Last."
+      },
+      {
+        "name": "--max-num-batched-tokens",
+        "wirkung": "Tokens je Scheduler-Schritt; begrenzt gleichzeitiges Prefill."
+      },
+      {
+        "name": "--block-size",
+        "wirkung": "Tokens je KV-Block (z. B. 16); bestimmt die Granularität von Cache-Treffern."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "request_timeout / timeout",
+        "wirkung": "Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast)."
+      },
+      {
+        "name": "context_window_fallbacks",
+        "wirkung": "Ausweichmodell bei zu langem Kontext."
+      }
+    ]
+  }
 }

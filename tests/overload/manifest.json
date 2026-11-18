@@ -1,11 +1,104 @@
 {
-  "id": "overload", "order": 220, "name": "Überlast", "category": "Stabilität & Betrieb",
+  "id": "overload",
+  "order": 220,
+  "name": "Überlast",
+  "category": "Stabilität & Betrieb",
   "description": "200 % der Kapazität über 5 min. Ergebnis: ob kontrolliert abgelehnt wird (schnelle 429/503) oder alle Anfragen langsam werden, und ob der Server danach erreichbar bleibt.",
   "estimated_duration_s": 400,
   "params": [
-    {"key": "load_pct", "label": "Last (% der Kapazität)", "type": "int", "default": 200},
-    {"key": "duration_s", "label": "Dauer (s)", "type": "int", "default": 300},
-    {"key": "capacity", "label": "Kapazität (parallel, leer = aus letztem Kapazitäts-Sweep)", "type": "int", "default": null}, {"key": "load_profile", "label": "Lastprofil", "type": "select", "default": "chat_kurz", "options": [{"value": "chat_kurz", "label": "Chat kurz"}, {"value": "chat_verlauf", "label": "Chat mit Verlauf"}, {"value": "rag", "label": "RAG"}, {"value": "langkontext", "label": "Langkontext"}, {"value": "generierung", "label": "Generierung"}, {"value": "agent", "label": "Agent"}]},
-    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
-  ]
+    {
+      "key": "load_pct",
+      "label": "Last (% der Kapazität)",
+      "type": "int",
+      "default": 200
+    },
+    {
+      "key": "duration_s",
+      "label": "Dauer (s)",
+      "type": "int",
+      "default": 300
+    },
+    {
+      "key": "capacity",
+      "label": "Kapazität (parallel, leer = aus letztem Kapazitäts-Sweep)",
+      "type": "int",
+      "default": null
+    },
+    {
+      "key": "load_profile",
+      "label": "Lastprofil",
+      "type": "select",
+      "default": "chat_kurz",
+      "options": [
+        {
+          "value": "chat_kurz",
+          "label": "Chat kurz"
+        },
+        {
+          "value": "chat_verlauf",
+          "label": "Chat mit Verlauf"
+        },
+        {
+          "value": "rag",
+          "label": "RAG"
+        },
+        {
+          "value": "langkontext",
+          "label": "Langkontext"
+        },
+        {
+          "value": "generierung",
+          "label": "Generierung"
+        },
+        {
+          "value": "agent",
+          "label": "Agent"
+        }
+      ]
+    },
+    {
+      "key": "seed",
+      "label": "Seed (leer = zufällig)",
+      "type": "int",
+      "default": null
+    }
+  ],
+  "settings": {
+    "vllm": [
+      {
+        "name": "--max-num-seqs",
+        "wirkung": "Max. gleichzeitig laufende Sequenzen = die echte Parallelität."
+      },
+      {
+        "name": "--gpu-memory-utilization",
+        "wirkung": "Anteil GPU-Speicher für den KV-Cache → wie viele/lange Anfragen gleichzeitig passen."
+      },
+      {
+        "name": "--scheduling-policy {fcfs,priority}",
+        "wirkung": "Planungsstrategie; fcfs lässt die Warteschlange bei Überlast wachsen."
+      },
+      {
+        "name": "--preemption-mode {recompute,swap}",
+        "wirkung": "Wie vLLM bei Speichermangel unterbrochene Anfragen behandelt."
+      },
+      {
+        "name": "--max-num-queued-reqs",
+        "wirkung": "Begrenzt wartende + laufende Anfragen zusammen."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "Key/Team: rpm, tpm, max_parallel_requests",
+        "wirkung": "Rate-/Parallelitäts-Grenzen je Mandant; 429 vom Gateway statt GPU-Limit."
+      },
+      {
+        "name": "request_timeout / timeout",
+        "wirkung": "Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast)."
+      },
+      {
+        "name": "num_retries, fallbacks, allowed_fails, cooldown_time",
+        "wirkung": "Stille Wiederholungen/Fallbacks (x-litellm-attempted-retries/-fallbacks)."
+      }
+    ]
+  }
 }

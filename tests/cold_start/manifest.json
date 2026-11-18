@@ -1,11 +1,56 @@
 {
-  "id": "cold_start", "order": 240, "name": "Kaltstart", "category": "Stabilität & Betrieb",
+  "id": "cold_start",
+  "order": 240,
+  "name": "Kaltstart",
+  "category": "Stabilität & Betrieb",
   "description": "Erste Anfrage nach längerer Pause, verglichen mit warmen Anfragen. Zeigt, ob Modell, Verbindungen oder Caches nach Leerlauf langsam anlaufen.",
   "estimated_duration_s": 700,
   "params": [
-    {"key": "pause_min", "label": "Pause (min)", "type": "float", "default": 10},
-    {"key": "warm_requests", "label": "warme Vergleichsanfragen", "type": "int", "default": 5},
-    {"key": "input_tokens", "label": "Input-Tokens", "type": "int", "default": 1000},
-    {"key": "output_tokens", "label": "Output-Tokens", "type": "int", "default": 100}
-  ]
+    {
+      "key": "pause_min",
+      "label": "Pause (min)",
+      "type": "float",
+      "default": 10
+    },
+    {
+      "key": "warm_requests",
+      "label": "warme Vergleichsanfragen",
+      "type": "int",
+      "default": 5
+    },
+    {
+      "key": "input_tokens",
+      "label": "Input-Tokens",
+      "type": "int",
+      "default": 1000
+    },
+    {
+      "key": "output_tokens",
+      "label": "Output-Tokens",
+      "type": "int",
+      "default": 100
+    }
+  ],
+  "settings": {
+    "vllm": [
+      {
+        "name": "--load-format",
+        "wirkung": "Format/Tempo des Modell-Ladens."
+      },
+      {
+        "name": "--enforce-eager",
+        "wirkung": "Ohne CUDA-Graph-Aufwärmung – erste Anfragen langsamer."
+      },
+      {
+        "name": "--enable-prefix-caching / --no-enable-prefix-caching",
+        "wirkung": "Prefix-Cache an/aus (in neuem vLLM meist standardmäßig an)."
+      }
+    ],
+    "litellm": [
+      {
+        "name": "request_timeout / timeout",
+        "wirkung": "Timeout je Anfrage im Gateway (wichtig bei langen Prefills/Überlast)."
+      }
+    ]
+  }
 }

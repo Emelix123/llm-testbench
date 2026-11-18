@@ -5,6 +5,7 @@
   import Chart from '../lib/Chart.svelte'
   import CostCalc from '../lib/CostCalc.svelte'
   import AttackExplainer from '../lib/AttackExplainer.svelte'
+  import SettingsRef from '../lib/SettingsRef.svelte'
   let { query } = $props()
   let rep = $state(null), error = $state(''), open = $state({}), refs = $state({}), pdfBusy = $state(false)
 
@@ -93,6 +94,7 @@
           {#if c.summary.users_note}<p class="small muted">{c.summary.users_note}</p>{/if}
           {#if c.summary.security}<div class="notice">Sicherheitstest. Nur gegen eigene Systeme mit Erlaubnis. Die Ampel bewertet aus Verteidigersicht: <b>rot = verwundbar</b>, grün = kein nutzbares Signal / gelöst.</div>{/if}
           {#if c.explain}<AttackExplainer explain={c.explain} />{/if}
+          {#if c.settings}<SettingsRef settings={c.settings} />{/if}
           {#if c.summary.method_note}<p class="small muted"><b>Methode:</b> {c.summary.method_note}</p>{/if}
           {#each c.summary.charts || [] as ch}<Chart spec={ch} />{/each}
           {#each c.summary.tables || [] as t}
