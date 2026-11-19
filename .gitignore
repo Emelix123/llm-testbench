@@ -16,3 +16,6 @@ data/quality/
 deploy/.env
 deploy/secrets/
 deploy/.active-scenario.json
+data/testbench.log
+data/testbench.pid
+data/exports/

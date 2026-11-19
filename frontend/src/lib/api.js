@@ -12,6 +12,7 @@ async function req(method, url, body) {
 }
 export const api = {
   get: (u) => req('GET', u),
+  text: async (u) => { const r = await fetch(u); if (!r.ok) throw new Error(r.statusText); return r.text() },
   post: (u, b) => req('POST', u, b ?? {}),
   put: (u, b) => req('PUT', u, b),
   del: (u) => req('DELETE', u),

@@ -10,21 +10,30 @@ der Arbeit. Nur auf eigenen Systemen betreiben.
 
 ## Schnellstart
 
+Am einfachsten über die Weboberfläche: `../start.sh`, dann Seite **Steuerung** (Prüfen → Einrichten →
+Images laden → Gesamtlauf). Server ohne Bildschirm: [`../docs/SERVER.md`](../docs/SERVER.md).
+Dasselbe im Terminal:
+
 ```bash
 cd deploy
-./scenario.sh init        # .env + Geheimnisse (secrets/) erzeugen – einmalig
-./scenario.sh profile     # Endpunkt-Profile + Mandanten-Keys in der Testplattform anlegen – einmalig
-./scenario.sh up K0       # Szenario starten (stoppt ein laufendes vorher)
+./scenario.sh check       # Systemprüfung (Docker, GPU, Images, Modell, Einrichtung)
+./scenario.sh init        # .env, Geheimnisse (secrets/), GPU-Werte, Endpunkt-Profile – einmalig
+./scenario.sh pull        # Images (~40 GB) + Modell – einmalig
+./scenario.sh run-all -n 3   # Gesamtlauf: alle passenden Szenarien, je 3 Messungen, Export nach data/exports/
 ```
 
-Dann in der Testplattform (`../start.sh`) Profil **„Lokal (LiteLLM, Mandant A)“** wählen und die Suite
-**„Konfigurationsvergleich (je Szenario)“** starten. Für K1 … K6 wiederholen. Das Szenario wird je Lauf
-automatisch aus `deploy/.active-scenario.json` übernommen (oben rechts in der Oberfläche sichtbar).
+Einzeln: `./scenario.sh up K0` startet ein Szenario (stoppt ein laufendes vorher); dann in der
+Testplattform Profil **„Lokal (LiteLLM, Mandant A)“** wählen und die Suite **„Konfigurationsvergleich
+(je Szenario)“** starten. Das Szenario wird je Lauf automatisch aus `deploy/.active-scenario.json`
+übernommen (oben in der Oberfläche sichtbar).
 
 ```bash
-./scenario.sh list | status | logs [dienst] | down | reset
+./scenario.sh list | status | logs [dienst] | down | reset | gpu
 ./scenario.sh detector up   # Wasserzeichen-Detektor allein (z. B. für K0 als Gegenprobe)
+./scenario.sh run-all --status | --abbrechen
 ```
+
+`LLMTB_PROJECT=name` trennt die Docker-Volumes mehrerer Repo-Kopien (Standard `llmtb`).
 
 | Dienst | Adresse | Wer darf |
 |---|---|---|
@@ -99,7 +108,8 @@ Jedes Szenario = K0 + genau die genannte(n) Maßnahme(n) (Ablationsstudie). K4 k
 
 ```
 deploy/
-  scenario.sh              Steuerung (init, up, down, profile, detector …)
+  scenario.sh              Steuerung (check, init, pull, run-all, up, down, profile, detector …)
+  ops_check.py             Systemprüfung (auch für die Seite „Steuerung“), nur Standardbibliothek
   .env.example             Vorlage; .env und secrets/ entstehen mit init (nie einchecken)
   compose/common.yaml      Bausteine (vllm, litellm, postgres, tenant-setup, wm-detector)
   compose/k0 … k6-*.yaml   die Szenarien (je Datei Kommentar mit Zweck und Erwartung)

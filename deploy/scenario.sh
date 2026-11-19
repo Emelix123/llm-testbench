@@ -1,25 +1,35 @@
 #!/usr/bin/env bash
 # Steuert die Test-Szenarien K0–K6 (vLLM + LiteLLM) für die Testplattform.
 #
-#   ./scenario.sh init            .env und Geheimnisse (deploy/secrets/) erzeugen – einmalig
+# Alles hier geht auch über die Weboberfläche (./start.sh → Seite „Steuerung“).
+#
+#   ./scenario.sh check           Systemprüfung: Docker, GPU, Images, Modell, Einrichtung (--gpu-container: GPU-Test)
+#   ./scenario.sh init            .env, Geheimnisse (deploy/secrets/), GPU-Werte und Endpunkt-Profile – einmalig
+#   ./scenario.sh pull            Docker-Images (~40 GB) und Modell vorab laden
+#   ./scenario.sh run-all [-s K0,K1,…] [-n 3] [--suite ID]
+#                                 Gesamtlauf: jedes Szenario starten, Suite messen, nächstes; am Ende Export
+#                                 nach data/exports/ (startet die Testplattform bei Bedarf im Hintergrund)
+#   ./scenario.sh run-all --status | --abbrechen
+#   ./scenario.sh gpu             GPU-Werte in deploy/.env neu aus dem VRAM berechnen
 #   ./scenario.sh list            Szenarien anzeigen
 #   ./scenario.sh up K1           Szenario starten (stoppt ein laufendes vorher), Mandanten anlegen
 #   ./scenario.sh down            alles stoppen (Daten bleiben)
 #   ./scenario.sh status          laufendes Szenario + Container
 #   ./scenario.sh logs [dienst]   Logs (Standard: vllm)
 #   ./scenario.sh profile         Endpunkt-Profile + Mandanten-Keys in der Testplattform anlegen
-#   ./scenario.sh pull-model      Modell in den Hugging-Face-Cache laden (für das Offline-Szenario K4)
+#   ./scenario.sh pull-model      nur das Modell in den Hugging-Face-Cache laden
 #   ./scenario.sh detector up|down  Wasserzeichen-Detektor allein (für Messungen in Szenarien ohne ihn)
 #   ./scenario.sh reset           alles stoppen UND Volumes (Postgres, Compile-Cache) löschen
 #
-# Es läuft immer genau ein Szenario (Compose-Projekt "llmtb"), alle auf denselben Ports:
-#   LiteLLM 127.0.0.1:4000 · vLLM direkt 127.0.0.1:8000 (nur K0–K3, K6) · Detektor 127.0.0.1:8090 (K4, K6)
+# Es läuft immer genau ein Szenario (Compose-Projekt "llmtb", änderbar mit LLMTB_PROJECT), alle auf
+# denselben Ports: LiteLLM 127.0.0.1:4000 · vLLM direkt 127.0.0.1:8000 (nur K0–K3, K6) · Detektor 127.0.0.1:8090
 set -euo pipefail
 cd "$(dirname "$0")"
 DEPLOY="$PWD"
 ROOT="$(cd .. && pwd)"
 ACTIVE="$DEPLOY/.active-scenario.json"
-PROJECT=llmtb
+PROJECT="${LLMTB_PROJECT:-llmtb}"
+BENCH="http://127.0.0.1:${PORT:-8080}"
 
 die() { echo "Fehler: $*" >&2; exit 1; }
 rand_b64() { python3 -c "import secrets,sys; print(secrets.token_urlsafe(int(sys.argv[1])))" "$1"; }
@@ -34,7 +44,9 @@ scenario_file() {
 xfield() { awk -v k="$2" '/^x-scenario:/{s=1;next} s&&/^[^ ]/{s=0} s&&$1==k":"{sub(/^[^:]*: */,"");print;exit}' "$1"; }
 compose() { docker compose -p "$PROJECT" --env-file .env -f "$@"; }
 need_env() { [[ -f .env && -f secrets/cache_salt_secret && -f secrets/watermark_key ]] || die "zuerst ./scenario.sh init"; }
-envval() { grep -E "^$1=" .env | head -1 | cut -d= -f2-; }
+envval() { local f=.env; [[ -f $f ]] || f=.env.example; grep -E "^$1=" "$f" | head -1 | cut -d= -f2-; }
+setenv() { if grep -qE "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi; }
+gpu_vram_mb() { nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | sort -n | tail -1; }
 
 cmd_init() {
   mkdir -p secrets && chmod 700 secrets
@@ -54,6 +66,12 @@ cmd_init() {
     sed -i "s|^LLMTB_UID=.*|LLMTB_UID=$(id -u)|; s|^LLMTB_GID=.*|LLMTB_GID=$(id -g)|" .env
     chmod 600 .env
     echo "deploy/.env angelegt (chmod 600)."
+    cmd_gpu
+    if docker volume inspect "${PROJECT}_pgdata" >/dev/null 2>&1; then
+      echo "Achtung: Die Gateway-Datenbank (Volume ${PROJECT}_pgdata) stammt von einer früheren Einrichtung und"
+      echo "         kennt das neue Postgres-Passwort nicht. Einmal ./scenario.sh reset ausführen (löscht nur"
+      echo "         Gateway-DB und Compile-Cache; Messergebnisse in data/ bleiben)."
+    fi
   else
     echo "deploy/.env existiert – unverändert."
   fi
@@ -63,6 +81,40 @@ cmd_init() {
   [[ -f secrets/watermark_key ]] || { python3 -c "import secrets; print(secrets.randbits(63))" > secrets/watermark_key; echo "secrets/watermark_key erzeugt."; }
   chmod 600 secrets/*
   # Container lesen die Secrets als root – die Dateien bleiben trotzdem nur für dich lesbar.
+  cmd_profile
+  echo
+  echo "Einrichtung fertig. Weiter: ./scenario.sh check, dann ./scenario.sh pull (Images ~40 GB + Modell)."
+}
+
+# GPU-Werte aus dem VRAM: Der KV-Cache bleibt fest (KV_CACHE_MEMORY) – so sind Messungen auf Laptop
+# und Server vergleichbar. Angepasst wird nur die Obergrenze, die vLLM beim Start gegen den freien
+# Speicher prüft: ~5 GB je Instanz genügen für Qwen3-0.6B; auf kleinen GPUs höchstens 0,78 (WSL).
+cmd_gpu() {
+  [[ -f .env ]] || die "zuerst ./scenario.sh init"
+  local mb; mb=$(gpu_vram_mb || true)
+  if [[ -z "$mb" ]]; then
+    echo "Keine NVIDIA-GPU gefunden (nvidia-smi) – GPU-Werte in deploy/.env bleiben unverändert."; return 0
+  fi
+  local u ud
+  u=$(awk -v m="$mb" 'BEGIN{v=5000/m; if(v>0.78)v=0.78; if(v<0.2)v=0.2; printf "%.2f", v}')
+  ud=$(awk -v m="$mb" 'BEGIN{v=3800/m; if(v>0.45)v=0.45; if(v<0.15)v=0.15; printf "%.2f", v}')
+  setenv GPU_MEMORY_UTILIZATION "$u"
+  setenv GPU_MEMORY_UTILIZATION_DEDICATED "$ud"
+  setenv LLMTB_GPU_VRAM_MB "$mb"
+  echo "GPU: $((mb / 1024)) GB VRAM → GPU_MEMORY_UTILIZATION=$u, je K5-Instanz $ud (KV-Cache fest: $(envval KV_CACHE_MEMORY) Bytes)."
+  (( mb >= 8000 )) || echo "Hinweis: K5 (zwei Instanzen) braucht >= 8 GB VRAM und wird im Gesamtlauf übersprungen."
+}
+
+cmd_check() { python3 "$DEPLOY/ops_check.py" "$@"; }
+
+cmd_pull() {
+  local img
+  for img in "$(envval VLLM_IMAGE)" "$(envval LITELLM_IMAGE)" "$(envval POSTGRES_IMAGE)"; do
+    echo "== docker pull $img"
+    docker pull "$img"
+  done
+  cmd_pull_model
+  echo "== Images und Modell sind da."
 }
 
 cmd_list() {
@@ -71,12 +123,13 @@ cmd_list() {
 }
 
 cmd_pull_model() {
-  need_env
   local model img cache
   model=$(envval MODEL); img=$(envval VLLM_IMAGE); cache=$(envval HF_CACHE); cache="${cache/#\~/$HOME}"
   mkdir -p "$cache"
   echo "Lade $model nach $cache …"
-  docker run --rm -v "$cache:/root/.cache/huggingface" -e HF_TOKEN="$(envval HF_TOKEN)" --entrypoint python3 "$img" \
+  # als eigener Nutzer, damit die Dateien im HF-Cache nicht root gehören
+  docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -e HF_HOME=/hf -v "$cache:/hf" -e HF_TOKEN="$(envval HF_TOKEN)" \
+    --entrypoint python3 "$img" \
     -c "from huggingface_hub import snapshot_download as d; print(d('$model'))"
 }
 
@@ -96,7 +149,15 @@ cmd_up() {
   fi
   local svcs; svcs=$(compose "$f" config --services | grep -v '^tenant-setup$' | tr '\n' ' ')
   # shellcheck disable=SC2086
-  compose "$f" up -d --wait --wait-timeout 1500 $svcs
+  if ! compose "$f" up -d --wait --wait-timeout 1500 $svcs; then
+    echo
+    echo "== Start von $sid fehlgeschlagen. Letzte Meldungen:"
+    compose "$f" logs --tail 25 2>/dev/null | grep -iE 'error|fehler|failed|password|memory|cuda' | tail -15 || true
+    if compose "$f" logs litellm 2>/dev/null | grep -q 'password authentication failed'; then
+      echo "→ Gateway-DB passt nicht zum Passwort in deploy/.env: ./scenario.sh reset, dann erneut starten."
+    fi
+    exit 1
+  fi
   compose "$f" run --rm tenant-setup
   python3 - "$ACTIVE" "$sid" "$sname" "$f" <<PY
 import hashlib, json, os, sys, datetime, pathlib
@@ -136,9 +197,9 @@ cmd_logs() { docker compose -p "$PROJECT" logs --tail 200 -f "${1:-vllm}"; }
 cmd_detector() {
   need_env
   case "${1:-up}" in
-    up) docker compose -p llmtb-wm --env-file .env -f compose/wm-detector.yaml up -d --wait --wait-timeout 300
+    up) docker compose -p "${PROJECT}-wm" --env-file .env -f compose/wm-detector.yaml up -d --wait --wait-timeout 300
         echo "Detektor: http://127.0.0.1:8090 (nur Betreiber)";;
-    down) docker compose -p llmtb-wm down;;
+    down) docker compose -p "${PROJECT}-wm" down;;
     *) die "detector up|down";;
   esac
 }
@@ -185,8 +246,82 @@ print("Keys in", sec_p)
 PY
 }
 
+# ------------------------------------------------------------------ Gesamtlauf (über die Testplattform)
+ensure_bench() {
+  curl -sf "$BENCH/api/status" >/dev/null 2>&1 && return 0
+  echo "Testplattform läuft nicht – starte sie im Hintergrund (Log: data/testbench.log) …"
+  "$ROOT/start.sh" --hintergrund
+  local i
+  for i in $(seq 1 90); do curl -sf "$BENCH/api/status" >/dev/null 2>&1 && return 0; sleep 2; done
+  die "Testplattform startet nicht – siehe data/testbench.log"
+}
+
+cmd_run_all() {
+  local scen="" reps=1 suite="konfigurationsvergleich" mode="start"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -s|--szenarien) scen="${2:-}"; shift 2;;
+      -n|--wiederholungen) reps="${2:-1}"; shift 2;;
+      --suite) suite="${2:-}"; shift 2;;
+      --status) mode="status"; shift;;
+      --abbrechen) mode="cancel"; shift;;
+      *) die "unbekannte Option $1 (erlaubt: -s K0,K1 · -n 3 · --suite ID · --status · --abbrechen)";;
+    esac
+  done
+  ensure_bench
+  python3 - "$BENCH" "$mode" "$scen" "$reps" "$suite" <<'PY'
+import json, sys, time, urllib.request, urllib.error
+base, mode, scen, reps, suite = sys.argv[1:6]
+def call(method, path, body=None):
+    req = urllib.request.Request(base + path, method=method, data=None if body is None else json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        try: return e.code, json.load(e)
+        except Exception: return e.code, {"detail": str(e)}
+if mode == "cancel":
+    code, r = call("POST", "/api/gesamtlauf/cancel", {})
+    print("Abbruch angefordert." if r.get("cancelled") else "Es läuft kein Gesamtlauf."); sys.exit(0)
+if mode == "start":
+    body = {"scenarios": [x.strip().upper() for x in scen.split(",") if x.strip()] or None,
+            "repetitions": int(reps), "suite": suite}
+    code, r = call("POST", "/api/gesamtlauf", body)
+    if code >= 400:
+        print("Fehler:", r.get("detail")); sys.exit(1)
+    print(f"Gesamtlauf {r['id']} gestartet: {', '.join(s['scenario'] for s in r['steps'])} · {r['repetitions']}× "
+          f"„{r['suite_name']}“ · geschätzt {round(r['estimate_s'] / 60)} min")
+    print("Fortschritt auch in der Weboberfläche (Seite „Steuerung“). Strg+C beendet nur diese Anzeige.\n")
+last = {}
+try:
+    while True:
+        code, g = call("GET", "/api/gesamtlauf")
+        if not g:
+            print("Kein Gesamtlauf vorhanden."); break
+        for st in g["steps"]:
+            key = (st["status"], st.get("text"))
+            if last.get(st["scenario"]) != key:
+                last[st["scenario"]] = key
+                print(time.strftime("%H:%M"), f"{st['scenario']:<3} {st['status']:<11} {st.get('text') or ''}", flush=True)
+        if g["state"] != "laeuft":
+            print(f"\nGesamtlauf {g['state']}.")
+            if g.get("export"):
+                print("Ergebnisse:", g["export"]["dir"])
+                for f in g["export"]["files"]: print("  ", f)
+            break
+        time.sleep(10)
+except KeyboardInterrupt:
+    print("\nAnzeige beendet – der Gesamtlauf läuft weiter. Stand: ./scenario.sh run-all --status")
+PY
+}
+
 case "${1:-}" in
   init) cmd_init;;
+  check) shift; cmd_check "$@";;
+  pull) cmd_pull;;
+  gpu) cmd_gpu;;
+  run-all) shift; cmd_run_all "$@";;
   list) cmd_list;;
   up) shift; cmd_up "${1:-}";;
   down) cmd_down;;
@@ -196,5 +331,5 @@ case "${1:-}" in
   pull-model) cmd_pull_model;;
   reset) cmd_reset;;
   detector) shift; cmd_detector "${1:-up}";;
-  *) sed -n '2,17p' "$0"; exit 1;;
+  *) sed -n '2,25p' "$0"; exit 1;;
 esac

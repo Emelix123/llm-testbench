@@ -78,40 +78,23 @@
   } : null)
 
   // ------------------------------------------------------------------ Export
-  function rowsForExport() {
-    const ms = (data?.metrics || []).filter((m) => groups.some((g) => g.values[m.key] != null))
-    return { ms, rows: groups.map((g) => [g.scenario || '', g.scenario_name || g.profile_name, ...ms.map((m) => g.values[m.key])]) }
+  // CSV/LaTeX erzeugt das Backend (/api/matrix/export) – dieselbe Funktion schreibt die Dateien des Gesamtlaufs.
+  let exp = $state({ csv: '', latex: '' })
+  async function loadExport() {
+    const q = (since ? '&since=' + since : '') + (base ? '&base=' + encodeURIComponent(base) : '')
+    try {
+      const [c, l] = await Promise.all([api.text('/api/matrix/export?format=csv' + q), api.text('/api/matrix/export?format=latex' + q)])
+      exp = { csv: c, latex: l }
+    } catch { exp = { csv: '', latex: '' } }
   }
-  function csv() {
-    const { ms, rows } = rowsForExport()
-    const esc = (v) => { const s = v === null || v === undefined ? '' : typeof v === 'boolean' ? (v ? 'ja' : 'nein') : typeof v === 'number' ? String(v).replace('.', ',') : String(v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
-    return [['Szenario', 'Konfiguration', ...ms.map((m) => m.label + (m.unit ? ` [${m.unit}]` : ''))], ...rows].map((r) => r.map(esc).join(';')).join('\n')
-  }
-  function latex() {
-    const tex = (s) => String(s).replace(/([%&_#$])/g, '\\$1').replace(/×/g, '$\\times$').replace(/≥/g, '$\\geq$').replace(/–/g, '--')
-      .replace(/^-(?=\d)/, '$-$')   // echtes Minuszeichen statt Bindestrich
-    const cell = (k, g) => { const m = M(k), v = g.values[k]; return v == null ? '--' : tex(fmt(m, v)) }
-    const dcell = (k, g) => { if (!B) return '--'; if (g.key === base) return 'Ref.'; const d = delta(M(k), g.values[k], B.values[k]); return d ? tex(dtxt(d)) : '--' }
-    const lines = groups.map((g) => [tex(short(g)), tex(g.scenario_name || g.profile_name), cell('prefix_auc', g), cell('prefix_d', g), cell('slowdown_sn', g),
-      cell('jain_index', g), cell('hardening_score', g), cell('wm_detect_rate', g), dcell('output_tps', g), dcell('ttft_p50_ms', g), dcell('tpot_p50_ms', g)].join(' & ') + ' \\\\')
-    return ['% Erzeugt von der LLM-Inferenz-Testplattform (Konfigurationsvergleich), ' + new Date().toLocaleString('de-DE'),
-      '% benötigt \\usepackage{booktabs}. Passt so auf A4 mit 2,5 cm Rand; sonst die tabular-Umgebung in',
-      '% \\resizebox{\\textwidth}{!}{...} (Paket graphicx) einschließen.',
-      '\\begin{table}[htbp]', '\\centering', '\\footnotesize', '\\setlength{\\tabcolsep}{2.5pt}',
-      '\\begin{tabular}{llrrrrrrrrr}', '\\toprule',
-      ' & & \\multicolumn{2}{c}{Seitenkanal} & \\multicolumn{2}{c}{Verfügbarkeit} & Härtung & WZ & \\multicolumn{3}{c}{$\\Delta$ zu ' + tex(B ? short(B) : 'Referenz') + '} \\\\',
-      '\\cmidrule(lr){3-4}\\cmidrule(lr){5-6}\\cmidrule(lr){9-11}',
-      'ID & Konfiguration & AUC & $d$ & $S_N$ & $J$ & bestanden & erkannt & Durchsatz & TTFT p50 & TPOT p50 \\\\', '\\midrule',
-      ...lines, '\\bottomrule', '\\end{tabular}',
-      '\\caption{Sicherheit und Leistungskosten der Konfigurationen (neuester Lauf je Test)}', '\\label{tab:konfigurationsvergleich}', '\\end{table}'].join('\n')
-  }
+  $effect(() => { data; base; since; loadExport() })
   async function copy(kind) {
-    const text = kind === 'csv' ? csv() : latex()
+    const text = kind === 'csv' ? exp.csv : exp.latex
     try { await navigator.clipboard.writeText(text); msg = (kind === 'csv' ? 'CSV' : 'LaTeX') + ' in die Zwischenablage kopiert.' } catch { msg = 'Kopieren nicht möglich – Datei herunterladen.' }
     setTimeout(() => (msg = ''), 3000)
   }
   function download(kind) {
-    const text = kind === 'csv' ? '\ufeff' + csv() : latex()
+    const text = kind === 'csv' ? '\ufeff' + exp.csv : exp.latex
     const a = document.createElement('a')
     a.href = URL.createObjectURL(new Blob([text], { type: kind === 'csv' ? 'text/csv' : 'text/plain' }))
     a.download = kind === 'csv' ? 'konfigurationsvergleich.csv' : 'konfigurationsvergleich.tex'
@@ -122,7 +105,7 @@
 <div class="row"><h1 class="grow">Konfigurationen: Sicherheit gegen Leistung</h1>
   <button onclick={load} disabled={loading}>{loading ? 'Lade …' : 'Neu laden'}</button></div>
 
-<p class="muted small">Je Konfiguration (Szenario K0–K6 aus <code>deploy/scenario.sh</code>, sonst Endpunkt-Profil) zählt der neueste fertige Lauf
+<p class="muted small">Je Konfiguration (Szenario K0–K6, siehe <a href="#/steuerung">Steuerung</a>; sonst Endpunkt-Profil) zählt der neueste fertige Lauf
   jedes Tests. Leistungswerte stammen aus „Leistungskosten der Isolation“ (Bezugs-Laststufe), Sicherheitswerte aus den Sicherheitstests.
   Differenzen sind relativ zur gewählten Referenz; <span class="good">grün</span> = besser, <span class="bad">rot</span> = schlechter (± 2 % gilt als gleich).</p>
 
@@ -140,10 +123,10 @@
   <div class="panel stack" style="margin-top:1rem">
     <h3>Noch keine Daten</h3>
     <ol class="small">
-      <li><code>cd deploy && ./scenario.sh init && ./scenario.sh profile</code> (einmalig)</li>
-      <li><code>./scenario.sh up K0</code> – dann in der Testplattform mit dem Profil „Lokal (LiteLLM, Mandant A)“ die Suite
-        <b>„Konfigurationsvergleich (je Szenario)“</b> starten.</li>
-      <li>Für jedes weitere Szenario (K1 … K6) wiederholen. Das Szenario wird je Lauf automatisch erkannt.</li>
+      <li>Auf <a href="#/steuerung">Steuerung</a> einrichten (einmalig) und einen <b>Gesamtlauf</b> starten – er misst alle Szenarien nacheinander.</li>
+      <li>Oder einzeln: dort ein Szenario starten und unter <a href="#/suiten">Suiten</a> mit dem Profil „Lokal (LiteLLM, Mandant A)“ die Suite
+        <b>„Konfigurationsvergleich (je Szenario)“</b> starten; für jedes Szenario wiederholen.</li>
+      <li>Schritt für Schritt: <a href="#/anleitung">Anleitung</a>.</li>
     </ol>
   </div>
 {:else}
@@ -194,8 +177,8 @@
   <h2>Export-Vorschau</h2>
   <p class="small muted">Dasselbe wie die Knöpfe oben – zum Markieren und Kopieren, falls die Zwischenablage nicht erlaubt ist.
     Die LaTeX-Tabelle braucht <code>\usepackage{'{'}booktabs{'}'}</code>.</p>
-  <details class="panel" id="export-latex"><summary>LaTeX (booktabs)</summary><pre class="export">{latex()}</pre></details>
-  <details class="panel" id="export-csv" style="margin-top:.6rem"><summary>CSV (Semikolon, Dezimalkomma – für Excel/LibreOffice)</summary><pre class="export">{csv()}</pre></details>
+  <details class="panel" id="export-latex"><summary>LaTeX (booktabs)</summary><pre class="export">{exp.latex}</pre></details>
+  <details class="panel" id="export-csv" style="margin-top:.6rem"><summary>CSV (Semikolon, Dezimalkomma – für Excel/LibreOffice)</summary><pre class="export">{exp.csv}</pre></details>
 {/if}
 
 <style>

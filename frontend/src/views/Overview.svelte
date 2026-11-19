@@ -10,11 +10,17 @@
 </script>
 
 <h1>Übersicht</h1>
-{#if profiles.length === 0 && batches}
+{#if batches && (profiles.length === 0 || batches.length === 0)}
   <div class="panel stack">
     <h3>Los geht's</h3>
-    <p>1. Unter <a href="#/endpunkte">Endpunkte</a> ein Profil anlegen (URL von LiteLLM, API-Key, Modell, Tokenizer).<br />
-       2. Unter <a href="#/tests">Tests</a> eine Suite oder einzelne Tests wählen und starten.</p>
+    <p>Die <a href="#/anleitung">Anleitung</a> erklärt alles Schritt für Schritt. Kurz:</p>
+    <ol>
+      <li><a href="#/steuerung">Steuerung</a> → Systemprüfung ansehen, „Einrichten“ und „Images & Modell laden“ (einmalig).</li>
+      <li>Dort einen <b>Gesamtlauf</b> starten – er misst alle Szenarien K0–K6 nacheinander.</li>
+      <li>Ergebnisse auf <a href="#/konfigurationen">Konfigurationen</a> ansehen und als LaTeX/CSV exportieren.</li>
+    </ol>
+    <p class="small muted">Einen eigenen, entfernten Endpunkt testen: unter <a href="#/endpunkte">Endpunkte</a> ein Profil anlegen,
+      dann unter <a href="#/tests">Tests</a> starten.</p>
   </div>
 {/if}
 

@@ -50,22 +50,20 @@ Danach in PowerShell: `wsl --shutdown`, Docker Desktop neu starten. Kontrolle in
 ### 2.3 Python ≥ 3.11 für die Testplattform – nötig
 
 In der Distribution ist Python **3.10** installiert; die Testplattform braucht ≥ 3.11 (`asyncio.timeout`).
-Empfohlen: `uv` (installiert Python ohne root und ohne die System-Python anzufassen):
+`./start.sh` erledigt das selbst: Fehlt ein passendes Python, legt es die `.venv` mit
+[uv](https://docs.astral.sh/uv/) und Python 3.12 an (ohne root, System-Python bleibt unverändert) und
+fragt vorher, ob es uv installieren darf. Von Hand ginge es so:
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -LsSf https://astral.sh/uv/install.sh | env UV_NO_MODIFY_PATH=1 sh
 ```
 
 ```bash
-cd ~/work/vLLM/llm-testbench && uv venv --python 3.12 .venv
+cd ~/work/vLLM/llm-testbench && ~/.local/bin/uv venv --python 3.12 .venv && ./start.sh
 ```
 
-```bash
-./start.sh
-```
-
-`start.sh` nutzt eine vorhandene `.venv`. Alternative ohne uv: `sudo add-apt-repository ppa:deadsnakes/ppa`
-und `sudo apt install python3.12 python3.12-venv`, dann `PYTHON=python3.12 ./start.sh`.
+Alternative ohne uv: `sudo add-apt-repository ppa:deadsnakes/ppa` und
+`sudo apt install python3.12 python3.12-venv`, dann `PYTHON=python3.12 ./start.sh`.
 
 ### 2.4 GPU-Speicher: feste KV-Cache-Größe
 

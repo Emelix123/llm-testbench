@@ -7,6 +7,12 @@ die Oberfläche Differenzen zur Referenz (meist K0) einfärben und als CSV/LaTeX
 """
 from __future__ import annotations
 
+import math
+import re
+import statistics
+from datetime import datetime
+from decimal import Decimal
+
 from . import storage
 
 MATRIX_TESTS = ("isolation_overhead", "prefix_cache_leak", "resource_contention", "hardening_check", "watermark")
@@ -94,3 +100,234 @@ def build(since: str | None = None, include_unfinished: bool = False) -> dict:
         "areas": AREAS,
         "tests": list(MATRIX_TESTS),
     }
+
+
+# ======================================================================= Export
+# Gleiche Formatierung wie die Seite „Konfigurationen“ (deutsches Zahlenformat, LaTeX mit booktabs).
+# Die Oberfläche holt CSV/LaTeX von hier (/api/matrix/export) – es gibt nur EINE Implementierung.
+
+
+PERF_KEYS = ("output_tps", "ttft_p50_ms", "tpot_p50_ms")
+SUMMARY_KEYS = ("prefix_auc", "prefix_auc_dev", "prefix_d", "slowdown_sn", "jain_index", "hardening_score",
+                "wm_detect_rate", "wm_fpr", "output_tps", "ttft_p50_ms", "tpot_p50_ms", "cache_hit_pct")
+
+
+def _isnum(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def num_de(v: float, d: int) -> str:
+    """1234.5 → '1.234,5' (wie Intl.NumberFormat('de-DE') mit fester Nachkommazahl)."""
+    s = f"{v:,.{d}f}"
+    return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
+
+
+def _js_str(v) -> str:
+    """Zahl wie JavaScripts String(v): 3.0 → '3', 0.25 → '0.25'."""
+    if isinstance(v, int):
+        return str(v)
+    if float(v).is_integer():
+        return str(int(v))
+    s = repr(float(v))
+    if "e" in s and abs(v) >= 1e-6:
+        s = format(Decimal(s), "f")
+    return s
+
+
+def fmt(m: dict | None, v) -> str:
+    if v is None:
+        return "–"
+    if isinstance(v, bool):
+        return "ja" if v else "nein"
+    if not _isnum(v):
+        return str(v)
+    d = m["digits"] if m and m.get("digits") is not None else 2
+    unit = (m or {}).get("unit") or ""
+    return num_de(v, d) + (("×" if unit == "×" else " " + unit) if unit else "")
+
+
+def delta(m: dict | None, v, b):
+    """Differenz zur Referenz in % und ob besser/schlechter (± 2 % gilt als gleich)."""
+    if not _isnum(v) or not _isnum(b) or b == 0 or not m:
+        return None
+    pct = (v - b) / abs(b) * 100
+    cls = "same"
+    if m.get("better") and abs(pct) > 2:
+        cls = "good" if ((pct < 0) if m["better"] == "lower" else (pct > 0)) else "bad"
+    return pct, cls
+
+
+def dtxt(d) -> str:
+    return ("+" if d[0] > 0 else "") + num_de(d[0], 1) + " %" if d else ""
+
+
+def base_group(data: dict, base_key: str | None = None) -> dict | None:
+    groups = data.get("groups") or []
+    return (next((g for g in groups if g["key"] == base_key), None)
+            or next((g for g in groups if g.get("scenario") == "K0"), None)
+            or (groups[0] if groups else None))
+
+
+def _short(g: dict) -> str:
+    return g.get("scenario") or g.get("profile_name") or "?"
+
+
+def _csv_cell(v) -> str:
+    if v is None:
+        s = ""
+    elif isinstance(v, bool):
+        s = "ja" if v else "nein"
+    elif _isnum(v):
+        s = _js_str(v).replace(".", ",")
+    else:
+        s = str(v)
+    return '"' + s.replace('"', '""') + '"' if re.search(r'[;"\n]', s) else s
+
+
+def to_csv(data: dict) -> str:
+    groups = data.get("groups") or []
+    ms = [m for m in data["metrics"] if any(g["values"].get(m["key"]) is not None for g in groups)]
+    head = ["Szenario", "Konfiguration", *[m["label"] + (f" [{m['unit']}]" if m["unit"] else "") for m in ms]]
+    rows = [[g.get("scenario") or "", g.get("scenario_name") or g.get("profile_name"),
+             *[g["values"].get(m["key"]) for m in ms]] for g in groups]
+    return "\n".join(";".join(_csv_cell(x) for x in r) for r in [head, *rows])
+
+
+def _tex(s) -> str:
+    s = re.sub(r"([%&_#$])", r"\\\1", str(s))
+    s = s.replace("×", "$\\times$").replace("≥", "$\\geq$").replace("–", "--")
+    return re.sub(r"^-(?=\d)", "$-$", s)    # echtes Minuszeichen statt Bindestrich
+
+
+def to_latex(data: dict, base_key: str | None = None, now: datetime | None = None) -> str:
+    groups = data.get("groups") or []
+    M = {m["key"]: m for m in data["metrics"]}
+    B = base_group(data, base_key)
+
+    def cell(k, g):
+        v = g["values"].get(k)
+        return "--" if v is None else _tex(fmt(M.get(k), v))
+
+    def dcell(k, g):
+        if not B:
+            return "--"
+        if g["key"] == B["key"]:
+            return "Ref."
+        d = delta(M.get(k), g["values"].get(k), B["values"].get(k))
+        return _tex(dtxt(d)) if d else "--"
+
+    lines = [" & ".join([_tex(_short(g)), _tex(g.get("scenario_name") or g.get("profile_name")),
+                         cell("prefix_auc", g), cell("prefix_d", g), cell("slowdown_sn", g), cell("jain_index", g),
+                         cell("hardening_score", g), cell("wm_detect_rate", g),
+                         dcell("output_tps", g), dcell("ttft_p50_ms", g), dcell("tpot_p50_ms", g)]) + " \\\\"
+             for g in groups]
+    stamp = (now or datetime.now()).strftime("%d.%m.%Y, %H:%M:%S")
+    return "\n".join([
+        "% Erzeugt von der LLM-Inferenz-Testplattform (Konfigurationsvergleich), " + stamp,
+        "% benötigt \\usepackage{booktabs}. Passt so auf A4 mit 2,5 cm Rand; sonst die tabular-Umgebung in",
+        "% \\resizebox{\\textwidth}{!}{...} (Paket graphicx) einschließen.",
+        "\\begin{table}[htbp]", "\\centering", "\\footnotesize", "\\setlength{\\tabcolsep}{2.5pt}",
+        "\\begin{tabular}{llrrrrrrrrr}", "\\toprule",
+        " & & \\multicolumn{2}{c}{Seitenkanal} & \\multicolumn{2}{c}{Verfügbarkeit} & Härtung & WZ & "
+        "\\multicolumn{3}{c}{$\\Delta$ zu " + _tex(_short(B) if B else "Referenz") + "} \\\\",
+        "\\cmidrule(lr){3-4}\\cmidrule(lr){5-6}\\cmidrule(lr){9-11}",
+        "ID & Konfiguration & AUC & $d$ & $S_N$ & $J$ & bestanden & erkannt & Durchsatz & TTFT p50 & TPOT p50 \\\\",
+        "\\midrule", *lines, "\\bottomrule", "\\end{tabular}",
+        "\\caption{Sicherheit und Leistungskosten der Konfigurationen (neuester Lauf je Test)}",
+        "\\label{tab:konfigurationsvergleich}", "\\end{table}"])
+
+
+def runs_long(since: str | None = None, scenarios: list[str] | None = None) -> list[dict]:
+    """Alle fertigen Läufe der Vergleichstests (auch Wiederholungen), älteste zuerst."""
+    from .runner import get_summary
+    out = []
+    for r in storage.list_runs():
+        if r.get("test") not in MATRIX_TESTS or r.get("status") != "fertig":
+            continue
+        if since and (r.get("started_at") or "") < since:
+            continue
+        rd = storage.RUNS / r["id"]
+        cfg = storage.read_json(rd / "config.json", {})
+        sc = cfg.get("deploy_scenario") or {}
+        if scenarios and sc.get("id") not in scenarios:
+            continue
+        summ = get_summary(rd)
+        out.append({"scenario": sc.get("id"), "scenario_name": sc.get("name"), "test": r["test"], "run_id": r["id"],
+                    "started_at": r.get("started_at"), "verdict": summ.get("verdict"),
+                    "batch_label": cfg.get("batch_label") or "", "values": summ.get("matrix") or {}})
+    out.sort(key=lambda x: x["started_at"] or "")
+    return out
+
+
+def runs_csv(rows: list[dict]) -> str:
+    keys = [m[0] for m in METRICS]
+    head = ["Szenario", "Konfiguration", "Test", "Lauf", "Start", "Ergebnis",
+            *[f"{lab} [{u}]" if u else lab for _, lab, u, *_ in METRICS]]
+    body = [[r["scenario"] or "", r["scenario_name"] or "", r["test"], r["run_id"], r["started_at"] or "",
+             r["verdict"] or "", *[r["values"].get(k) for k in keys]] for r in rows]
+    return "\n".join(";".join(_csv_cell(x) for x in row) for row in [head, *body])
+
+
+def aggregate(rows: list[dict]) -> dict[str, dict[str, dict]]:
+    """Je Szenario und Kennzahl: Mittelwert, Standardabweichung, n (über Wiederholungen)."""
+    acc: dict[str, dict[str, list]] = {}
+    for r in rows:
+        if not r["scenario"]:
+            continue
+        for k, v in r["values"].items():
+            acc.setdefault(r["scenario"], {}).setdefault(k, []).append(v)
+    out: dict[str, dict[str, dict]] = {}
+    for sc, kv in acc.items():
+        for k, vals in kv.items():
+            nums = [v for v in vals if _isnum(v)]
+            if nums:
+                out.setdefault(sc, {})[k] = {"mean": statistics.fmean(nums), "n": len(nums),
+                                             "sd": statistics.stdev(nums) if len(nums) > 1 else None}
+            else:
+                seen = list(dict.fromkeys(fmt(None, v) for v in vals if v is not None))
+                out.setdefault(sc, {})[k] = {"text": " / ".join(seen), "n": len(vals)}
+    return out
+
+
+def summary_md(rows: list[dict], title: str, notes: list[str] | None = None) -> str:
+    M = {m[0]: {"key": m[0], "label": m[1], "unit": m[2], "better": m[3], "digits": m[5]} for m in METRICS}
+    agg = aggregate(rows)
+    scen = sorted(agg)
+    names = {r["scenario"]: r["scenario_name"] for r in rows if r["scenario"]}
+
+    def cell(sc, k):
+        a = agg.get(sc, {}).get(k)
+        if not a:
+            return "–"
+        if "text" in a:
+            return a["text"]
+        d = M[k]["digits"] if M[k]["digits"] is not None else 2
+        s = num_de(a["mean"], d)          # Einheit steht im Spaltenkopf
+        if a["sd"] is not None:
+            s += " ± " + num_de(a["sd"], d)
+        return s + (f" (n={a['n']})" if a["n"] > 1 else "")
+
+    keys = [k for k in SUMMARY_KEYS if any(k in agg.get(sc, {}) for sc in scen)]
+    out = [f"# {title}", ""]
+    out += [f"- {n}" for n in (notes or [])]
+    out += ["", "## Kennzahlen je Szenario", "",
+            "Mittelwert ± Standardabweichung über die Wiederholungen (n = Anzahl Läufe).", "",
+            "| Szenario | " + " | ".join(M[k]["label"] + (f" [{M[k]['unit']}]" if M[k]["unit"] else "") for k in keys) + " |",
+            "|---|" + "---:|" * len(keys)]
+    for sc in scen:
+        out.append(f"| {sc} {names.get(sc) or ''} | " + " | ".join(cell(sc, k) for k in keys) + " |")
+    ref = "K0" if "K0" in agg else (scen[0] if scen else None)
+    if ref:
+        out += ["", f"## Leistung gegenüber {ref} (Δ % der Mittelwerte)", "",
+                "| Szenario | " + " | ".join(M[k]["label"] for k in PERF_KEYS) + " |", "|---|" + "---:|" * len(PERF_KEYS)]
+        for sc in scen:
+            cells = []
+            for k in PERF_KEYS:
+                a, b = agg.get(sc, {}).get(k), agg.get(ref, {}).get(k)
+                d = delta(M[k], a and a.get("mean"), b and b.get("mean"))
+                cells.append("Referenz" if sc == ref else (dtxt(d) if d else "–"))
+            out.append(f"| {sc} | " + " | ".join(cells) + " |")
+    out += ["", "## Läufe", "", "| Start | Szenario | Test | Ergebnis | Lauf |", "|---|---|---|---|---|"]
+    for r in rows:
+        out.append(f"| {r['started_at']} | {r['scenario'] or '–'} | {r['test']} | {r['verdict'] or '–'} | {r['run_id']} |")
+    return "\n".join(out) + "\n"

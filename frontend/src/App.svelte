@@ -11,19 +11,26 @@
   import Settings from './views/Settings.svelte'
   import Live from './views/Live.svelte'
   import Matrix from './views/Matrix.svelte'
+  import Steuerung from './views/Steuerung.svelte'
+  import Anleitung from './views/Anleitung.svelte'
   import { api } from './lib/api.js'
 
   const menu = [
-    ['', 'Übersicht'], ['endpunkte', 'Endpunkte'], ['tests', 'Tests'], ['suiten', 'Suiten'],
-    ['ergebnisse', 'Ergebnisse'], ['konfigurationen', 'Konfigurationen'], ['vergleich', 'Vergleich'], ['einstellungen', 'Einstellungen'],
+    ['', 'Übersicht'], ['anleitung', 'Anleitung'], ['steuerung', 'Steuerung'], ['endpunkte', 'Endpunkte'], ['tests', 'Tests'],
+    ['suiten', 'Suiten'], ['ergebnisse', 'Ergebnisse'], ['konfigurationen', 'Konfigurationen'], ['vergleich', 'Vergleich'],
+    ['einstellungen', 'Einstellungen'],
   ]
   const views = { '': Overview, endpunkte: Endpoints, tests: Tests, suiten: Suites, ergebnisse: Results,
-    bericht: Report, vergleich: Compare, einstellungen: Settings, live: Live, konfigurationen: Matrix }
+    bericht: Report, vergleich: Compare, einstellungen: Settings, live: Live, konfigurationen: Matrix,
+    steuerung: Steuerung, anleitung: Anleitung }
 
   let route = $state(parse())
   let open = $state(false)
-  let scenario = $state(null)
-  async function loadScenario() { try { scenario = await api.get('/api/scenario') } catch { scenario = null } }
+  let scenario = $state(null), sys = $state(null)
+  async function loadScenario() {
+    try { scenario = await api.get('/api/scenario') } catch { scenario = null }
+    try { sys = await api.get('/api/status') } catch { sys = null }
+  }
   function parse() {
     const h = location.hash.replace(/^#\/?/, '')
     const [path, q] = h.split('?')
@@ -34,7 +41,7 @@
     addEventListener('hashchange', on)
     refresh()
     loadScenario()
-    const t = setInterval(loadScenario, 15000)
+    const t = setInterval(loadScenario, 10000)
     return () => { removeEventListener('hashchange', on); clearInterval(t) }
   })
   const View = $derived(views[route.path] || Overview)
@@ -46,7 +53,9 @@
     <span></span><span></span><span></span>
   </button>
   <a class="brand" href="#/">LLM-Inferenz-Testplattform</a>
-  {#if scenario?.id}<a class="scen" href="#/konfigurationen" title={'Lokal laufendes Szenario (deploy/scenario.sh): ' + (scenario.massnahmen || '')}>Szenario {scenario.id} · {scenario.name}</a>{/if}
+  {#if scenario?.id}<a class="scen" href="#/steuerung" title={'Lokal laufendes Szenario – Maßnahmen: ' + ((scenario.massnahmen || []).join?.(', ') || 'keine')}>Szenario {scenario.id} · {scenario.name}</a>{/if}
+  {#if sys?.gesamtlauf === 'laeuft'}<a class="scen busy" href="#/steuerung">Gesamtlauf läuft</a>
+  {:else if sys?.ops_busy}<a class="scen busy" href="#/steuerung">{sys.ops_label} …</a>{/if}
   <div class="grow"></div>
   {#if running}
     <a class="runpill" href="#/live"><i></i> Test läuft – {live.batch.live?.inflight ?? 0} parallel</a>
@@ -96,5 +105,6 @@
   @keyframes p { 50% { opacity: .25 } }
   .scen { font-size: .8rem; font-weight: 600; text-decoration: none; color: var(--muted); border: 1px solid var(--line);
     padding: .15rem .6rem; border-radius: 99px; white-space: nowrap; }
+  .scen.busy { color: var(--accent); border-color: var(--accent); }
   .primary-link { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
 </style>

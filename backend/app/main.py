@@ -4,16 +4,20 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
+import re
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import storage
 from .client import Endpoint, make_client, measure_network_latency, simple_get, stream_chat, now_ns
+from .ops import gl, ops
 from .runner import batch_report, get_summary, manager, modules, summarize_run
 from .sysmon import cpu
 
@@ -128,8 +132,8 @@ BUILTIN_SUITES = [
     {"id": "konfigurationsvergleich", "name": "Konfigurationsvergleich (je Szenario)", "duration": "ca. 15–20 min",
      "items": [{"test": "hardening_check"}, {"test": "prefix_cache_leak"}, {"test": "isolation_overhead"},
                {"test": "watermark"}, {"test": "resource_contention"}], "builtin": True,
-     "note": "Einmal je Szenario K0–K6 laufen lassen (deploy/scenario.sh up Kx). Ergebnis: Seite „Konfigurationen“. "
-             "Wasserzeichen braucht den Detektor (K4/K6 oder ./scenario.sh detector up)."},
+     "note": "Einmal je Szenario K0–K6 – am einfachsten als Gesamtlauf auf der Seite „Steuerung“. Ergebnis: Seite "
+             "„Konfigurationen“. Wasserzeichen braucht den Detektor (K4/K6 oder Detektor auf der Seite „Steuerung“)."},
     {"id": "abnahme", "name": "Abnahme", "duration": "mehrere Stunden",
      "items": [{"test": "quickcheck"}, {"test": "config"}, {"test": "concurrency"}, {"test": "capacity_sweep"},
                {"test": "rate_test"}, {"test": "context_matrix"}, {"test": "cache_benefit"}, {"test": "cost_split"},
@@ -200,6 +204,10 @@ async def start_batch(req: Request):
     items = data.get("items") or []
     if not items:
         _err(400, "Bitte mindestens einen Test wählen.")
+    if gl.running():
+        _err(409, "Ein Gesamtlauf läuft – Tests startet er selbst (Seite „Steuerung“).")
+    if ops.busy():
+        _err(409, f"Erst abwarten: {ops.job.label} läuft noch (Seite „Steuerung“).")
     try:
         b = manager.start(prof, items, data.get("label") or "", bool(data.get("make_report")))
     except (RuntimeError, ValueError) as e:
@@ -291,6 +299,189 @@ def matrix_metrics():
 def scenario():
     """Lokal laufendes Szenario laut deploy/.active-scenario.json (oder null)."""
     return storage.active_scenario()
+
+
+# ---------------------------------------------------------------- Steuerung (deploy/scenario.sh)
+# Diese Endpunkte starten Docker-Container. Nur von diesem Rechner (oder per SSH-Tunnel) erlaubt,
+# nur mit JSON-Content-Type (Formulare fremder Webseiten scheitern) und mit lokalem Host-Header
+# (gegen DNS-Rebinding). LLMTB_OPS_REMOTE=1 hebt die Adressprüfung auf – nur hinter eigener Absicherung.
+
+_LOCAL = {"127.0.0.1", "localhost", "::1"}
+
+
+def _ops_guard(req: Request, write: bool = False) -> None:
+    if os.environ.get("LLMTB_OPS_REMOTE") != "1":
+        if (req.client.host if req.client else "") not in _LOCAL:
+            _err(403, "Steuerung nur lokal oder per SSH-Tunnel (ssh -L 8080:localhost:8080 server).")
+        host = urlparse("//" + (req.headers.get("host") or "")).hostname or ""
+        if host not in _LOCAL:
+            _err(403, f"Unerwarteter Host „{host}“ – bitte über http://localhost:<port> öffnen.")
+    origin = req.headers.get("origin")
+    if origin and (urlparse(origin).hostname or "") not in _LOCAL | {urlparse("//" + (req.headers.get("host") or "")).hostname}:
+        _err(403, "Fremde Herkunft (Origin) – abgelehnt.")
+    if write and "application/json" not in (req.headers.get("content-type") or ""):
+        _err(415, "Nur JSON.")
+
+
+def _not_while_measuring() -> None:
+    if gl.running():
+        _err(409, "Ein Gesamtlauf läuft – erst abbrechen oder abwarten.")
+    if manager.current and manager.current.state == "laeuft":
+        _err(409, "Ein Test läuft – Szenario jetzt zu ändern würde die Messung verfälschen. Erst abbrechen oder abwarten.")
+
+
+@app.get("/api/ops/check")
+async def ops_check(req: Request, gpu: bool = False):
+    _ops_guard(req)
+    try:
+        return await ops.system_check(gpu_container=gpu)
+    except RuntimeError as e:
+        _err(500, str(e))
+
+
+@app.get("/api/ops/scenarios")
+def ops_scenarios(req: Request):
+    _ops_guard(req)
+    from .ops import scenarios
+    return scenarios()
+
+
+@app.get("/api/ops/status")
+async def ops_status(req: Request):
+    _ops_guard(req)
+    from .ops import status as st
+    return await st()
+
+
+@app.get("/api/ops/job")
+def ops_job(req: Request, tail: int = 400):
+    _ops_guard(req)
+    return ops.job.snapshot(tail=max(0, min(tail, 3000))) if ops.job else None
+
+
+@app.post("/api/ops/run")
+async def ops_run(req: Request):
+    _ops_guard(req, write=True)
+    from .ops import ACTIONS, scenarios
+    data = await req.json()
+    action = str(data.get("action") or "")
+    if action == "cancel":
+        return {"cancelled": ops.cancel()}
+    _not_while_measuring()
+    if action == "up":
+        sid = str(data.get("scenario") or "").upper()
+        sc = next((x for x in scenarios() if x["id"] == sid), None)
+        if not re.fullmatch(r"K[0-9]", sid) or not sc:
+            _err(400, "Unbekanntes Szenario.")
+        if not sc["available"]:
+            _err(409, f"{sid} {sc['reason']}.")
+        args, label = ["up", sid], f"{sid} starten"
+    elif action in ACTIONS:
+        if action == "reset" and not data.get("confirm"):
+            _err(400, "Zurücksetzen bitte bestätigen.")
+        args, label = ACTIONS[action]
+    else:
+        _err(400, "Unbekannte Aktion.")
+    try:
+        return ops.start(action, list(args), label).snapshot()
+    except RuntimeError as e:
+        _err(409, str(e))
+
+
+@app.get("/api/ops/logs")
+async def ops_logs(req: Request, service: str = "vllm", tail: int = 200):
+    _ops_guard(req)
+    from .ops import logs
+    try:
+        return PlainTextResponse(await logs(service, max(10, min(tail, 2000))))
+    except ValueError as e:
+        _err(400, str(e))
+
+
+@app.post("/api/gesamtlauf")
+async def gesamtlauf_start(req: Request):
+    _ops_guard(req, write=True)
+    from .ops import Gesamtlauf, scenarios
+    data = await req.json()
+    if gl.running():
+        _err(409, "Es läuft bereits ein Gesamtlauf.")
+    if ops.busy():
+        _err(409, f"Erst abwarten: {ops.job.label} läuft noch.")
+    if manager.current and manager.current.state == "laeuft":
+        _err(409, "Es läuft gerade ein Test – erst abwarten oder abbrechen.")
+    avail = {x["id"]: x for x in scenarios()}
+    wanted = [str(x).upper() for x in (data.get("scenarios") or [k for k, v in avail.items() if v["available"]])]
+    bad = [x for x in wanted if x not in avail]
+    if bad or not wanted:
+        _err(400, "Unbekannte Szenarien: " + ", ".join(bad) if bad else "Bitte mindestens ein Szenario wählen.")
+    skipped = [x for x in wanted if not avail[x]["available"]]
+    if skipped:
+        _err(409, "Nicht möglich auf dieser GPU: " + ", ".join(f"{x} ({avail[x]['reason']})" for x in skipped))
+    reps = int(data.get("repetitions") or 1)
+    if not 1 <= reps <= 10:
+        _err(400, "Wiederholungen: 1 bis 10.")
+    sid = data.get("suite") or "konfigurationsvergleich"
+    suite = next((s for s in get_suites() if s["id"] == sid), None)
+    if not suite or not suite["items"]:
+        _err(400, "Unbekannte oder leere Suite.")
+    profile_id = data.get("profile_id") or "lokal-litellm"
+    if not storage.get_profile(profile_id):
+        _err(409, f"Profil „{profile_id}“ fehlt – zuerst „Einrichten“.")
+    mods = modules()
+    per_rep = sum(mods[i["test"]].estimate_s({**mods[i["test"]].defaults(), **(i.get("params") or {})})
+                  for i in suite["items"] if i["test"] in mods)
+    g = Gesamtlauf(sorted(dict.fromkeys(wanted)), reps, suite, profile_id, per_rep, bool(data.get("keep_running")))
+    gl.current = g
+    g.task = asyncio.create_task(g.execute(manager))
+    return g.snapshot()
+
+
+@app.get("/api/gesamtlauf")
+def gesamtlauf_get(req: Request):
+    _ops_guard(req)
+    return gl.current.snapshot() if gl.current else None
+
+
+@app.post("/api/gesamtlauf/cancel")
+async def gesamtlauf_cancel(req: Request):
+    _ops_guard(req, write=True)
+    return {"cancelled": bool(gl.current and gl.current.cancel(manager))}
+
+
+@app.get("/api/exports")
+def exports_list(req: Request):
+    _ops_guard(req)
+    from .ops import list_exports
+    return list_exports()
+
+
+@app.get("/api/exports/{eid}/{name}")
+def exports_file(req: Request, eid: str, name: str):
+    _ops_guard(req)
+    from .ops import EXPORTS
+    if not re.fullmatch(r"[0-9]{8}-[0-9]{6}", eid) or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+        _err(400, "Ungültiger Name.")
+    f = EXPORTS / eid / name
+    if not f.is_file():
+        _err(404, "Datei nicht gefunden.")
+    return FileResponse(f, filename=f"{eid}-{name}")
+
+
+@app.get("/api/matrix/export")
+def matrix_export(format: str = "csv", since: str | None = None, base: str | None = None):
+    """CSV/LaTeX der Seite „Konfigurationen“ (eine Implementierung für Oberfläche und Gesamtlauf)."""
+    from . import matrix as mx
+    data = mx.build(since=since)
+    if format == "latex":
+        return PlainTextResponse(mx.to_latex(data, base))
+    if format == "csv":
+        return PlainTextResponse(mx.to_csv(data))
+    if format == "laeufe":
+        return PlainTextResponse(mx.runs_csv(mx.runs_long(since=since)))
+    if format == "md":
+        rows = mx.runs_long(since=since)
+        return PlainTextResponse(mx.summary_md(rows, "Konfigurationsvergleich", [f"Läufe seit {since}" if since else "alle Läufe"]))
+    _err(400, "format: csv, latex, laeufe oder md")
 
 
 @app.get("/api/report")
@@ -396,7 +587,9 @@ async def put_settings(req: Request):
 @app.get("/api/status")
 def status():
     return {"version": storage.TOOL_VERSION, "client_cpu_pct": cpu.value,
-            "running": bool(manager.current and manager.current.state == "laeuft")}
+            "running": bool(manager.current and manager.current.state == "laeuft"),
+            "ops_busy": ops.busy(), "ops_label": ops.job.label if ops.busy() else None,
+            "gesamtlauf": gl.current.state if gl.current else None}
 
 
 # ---------------------------------------------------------------- Frontend

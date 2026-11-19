@@ -2,17 +2,41 @@
 
 Lokales Test-Tool: zeigt per Knopfdruck, wie viele Anfragen eine vLLM-Maschine hinter LiteLLM
 wirklich gleichzeitig rechnet, wie viele Nutzer sie trägt, was 1 Mio. Tokens kostet und ob die
-Konfiguration stimmt. Läuft komplett auf dem Laptop – kein Server, keine Datenbank.
+Konfiguration stimmt – und misst für die Bachelorarbeit, wie gut Konfigurationen von vLLM + LiteLLM
+Mandanten trennen und was das an Leistung kostet (Szenarien K0–K6, per Knopfdruck aus der Oberfläche).
+Läuft auf dem Laptop (Linux/WSL) oder einem GPU-Server.
 
-## Start
+## Schnellstart
 
 ```bash
-./start.sh          # Windows: start.bat
+git clone https://github.com/Emelix123/llm-testbench.git
+cd llm-testbench
+./start.sh                  # Weboberfläche auf http://localhost:8080 (Beenden: Strg+C)
 ```
 
-Dann <http://localhost:8080> öffnen. Voraussetzung: Python ≥ 3.11 (empfohlen 3.12; unter WSL mit
-Ubuntu 22.04 ist nur 3.10 installiert → `docs/WSL-SETUP.md`).
+Dann <http://localhost:8080> öffnen und links im Menü **Anleitung** wählen – sie führt Schritt für
+Schritt durch alles Weitere. Bedient wird alles auf der Seite **Steuerung**:
+
+1. **Systemprüfung** – Docker, GPU, Images, Modell, Einrichtung (läuft beim Öffnen automatisch).
+2. **Einrichten** und **Images & Modell laden** – einmalig je Rechner (~40 GB Download).
+3. **Gesamtlauf** – misst alle Szenarien K0–K6 nacheinander; Dauer ~15–20 min je Szenario.
+4. Ergebnisse auf der Seite **Konfigurationen** (LaTeX-/CSV-Export) und in `data/exports/`.
+
+| Befehl | Wofür |
+|---|---|
+| `./start.sh` | Weboberfläche im Vordergrund |
+| `./start.sh --hintergrund` / `--stopp` | im Hintergrund (Server), Log in `data/testbench.log` / beenden |
+| `PORT=8081 ./start.sh` | anderer Port |
+
+**Python:** `start.sh` braucht Python ≥ 3.11. Fehlt es (z. B. Ubuntu 22.04 mit 3.10), legt es die
+Umgebung über [uv](https://docs.astral.sh/uv/) mit Python 3.12 an – ohne root, nach Rückfrage.
+Windows ohne WSL: `start.bat` (nur Messen entfernter Endpunkte; die Szenarien brauchen Linux/WSL).
 Das gebaute Frontend liegt in `frontend/dist`; npm braucht man nur, um es neu zu bauen.
+
+**Auf einem Server** (GPU-Rechner ohne Bildschirm): [`docs/SERVER.md`](docs/SERVER.md) – kurz:
+`./start.sh --hintergrund` auf dem Server, `ssh -L 8080:localhost:8080 nutzer@server` auf dem eigenen
+Rechner, dann <http://localhost:8080> im eigenen Browser. Ohne Browser geht der Gesamtlauf auch im
+Terminal: `./deploy/scenario.sh run-all -n 3`.
 
 ### Ohne GPU ausprobieren
 
@@ -33,14 +57,31 @@ Schutzmaßnahmen der Arbeit unterscheiden (K0 Standard … K4 voll gehärtet nac
 K5 dedizierte Instanzen, K6 Wasserzeichen). Details und Befunde: [`deploy/README.md`](deploy/README.md),
 WSL-Einrichtung: [`docs/WSL-SETUP.md`](docs/WSL-SETUP.md).
 
-```bash
-cd deploy && ./scenario.sh init && ./scenario.sh profile && ./scenario.sh up K0
-```
+Am einfachsten über die Weboberfläche: **Steuerung → Gesamtlauf**. Er startet jedes gewählte Szenario,
+misst die Suite **„Konfigurationsvergleich (je Szenario)“** (Härtung, Prefix-Cache-Seitenkanal,
+Leistungskosten der Isolation, Wasserzeichen, Ressourcenverdrängung) so oft wie angegeben, stoppt am
+Ende und schreibt nach `data/exports/<Datum>/`:
 
-Dann Suite **„Konfigurationsvergleich (je Szenario)“** mit Profil „Lokal (LiteLLM, Mandant A)“ starten,
-für jedes Szenario wiederholen. Die Seite **Konfigurationen** zeigt Sicherheit und Leistung aller
-Szenarien nebeneinander (Δ % zur Referenz, Diagramme) und exportiert die Tabelle als **LaTeX** (booktabs)
-oder CSV. Das laufende Szenario erkennt die Testplattform selbst (`deploy/.active-scenario.json`).
+| Datei | Inhalt |
+|---|---|
+| `zusammenfassung.md` | Kennzahlen je Szenario als Mittelwert ± Standardabweichung über die Wiederholungen, Δ % zu K0, Liste aller Läufe |
+| `konfigurationsvergleich.tex` | LaTeX-Tabelle (booktabs, passt auf A4) – neuester Lauf je Szenario |
+| `konfigurationsvergleich.csv` | dieselbe Tabelle für Excel/LibreOffice (Semikolon, Dezimalkomma) |
+| `laeufe.csv` | jeder einzelne Lauf mit allen Kennzahlen |
+
+Die Seite **Konfigurationen** zeigt Sicherheit und Leistung aller Szenarien nebeneinander (Δ % zur
+Referenz, Diagramme) und exportiert dieselbe Tabelle. Das laufende Szenario erkennt die Testplattform
+selbst (`deploy/.active-scenario.json`).
+
+Im Terminal geht alles genauso (`deploy/scenario.sh`, Übersicht mit `./deploy/scenario.sh`):
+
+```bash
+./deploy/scenario.sh check             # Systemprüfung
+./deploy/scenario.sh init              # Schlüssel, GPU-Werte, Profile (einmalig)
+./deploy/scenario.sh pull              # Images ~40 GB + Modell (einmalig)
+./deploy/scenario.sh run-all -n 3      # Gesamtlauf: alle passenden Szenarien, je 3 Wiederholungen
+./deploy/scenario.sh up K1             # oder ein Szenario einzeln starten (down: stoppen)
+```
 
 ### Kennzahlen der Arbeit → Test
 
@@ -70,13 +111,15 @@ backend/app/        FastAPI: Lastgenerator, Messung, Ablage, API, SSE
   loadprofiles.py   die sechs Lastprofile
   quality.py        Referenzvergleich, LLM als Prüfer
   report.py         Prüfbericht HTML (SVG-Diagramme) und PDF
-  matrix.py         Konfigurationsvergleich K0–K6 (Kennzahl-Definitionen, neuester Lauf je Szenario)
+  matrix.py         Konfigurationsvergleich K0–K6 (Kennzahlen, neuester Lauf je Szenario, CSV/LaTeX/Zusammenfassung)
+  ops.py            Steuerung: ruft deploy/scenario.sh auf, Gesamtlauf über alle Szenarien, Export
   media.py          Testbilder
 tests/<name>/       ein Ordner pro Test: manifest.json + test.py (run, summarize, estimate)
 frontend/           Svelte + Vite + ECharts
 mock/               Mock-Endpunkt zum Ausprobieren
-deploy/             Szenarien K0–K6 (Docker Compose: vLLM + LiteLLM + Postgres), Mandanten-Hook, Detektor
-docs/               WSL-Einrichtung
+deploy/             Szenarien K0–K6 (Docker Compose: vLLM + LiteLLM + Postgres), Mandanten-Hook, Detektor,
+                    scenario.sh (Steuerung), ops_check.py (Systemprüfung)
+docs/               Server- und WSL-Einrichtung
 data/               alles, was das Tool speichert (siehe unten)
 ```
 
@@ -113,6 +156,8 @@ data/runs/<datum>_<uhrzeit>_<test>/
     summary.json           Kennzahlen und Ampel (wird bei geänderten Einstellungen neu berechnet)
 data/references.json       Referenzläufe der Qualitätstests
 data/reports/              Prüfberichte (HTML, PDF)
+data/exports/<datum>/      Ergebnisse je Gesamtlauf (zusammenfassung.md, .tex, .csv, laeufe.csv)
+data/testbench.log         Log, wenn die Testplattform mit ./start.sh --hintergrund läuft
 data/quality/cases.jsonl   eigene Kundenaufgaben (optional)
 ```
 
