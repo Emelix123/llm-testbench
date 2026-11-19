@@ -19,6 +19,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 DEPLOY = Path(__file__).resolve().parent
 ROOT = DEPLOY.parent
@@ -26,6 +27,35 @@ PROJECT = os.environ.get("LLMTB_PROJECT", "llmtb")
 K5_MIN_MB = 8000          # zwei vLLM-Instanzen auf einer GPU
 MIN_VRAM_MB = 3800        # Qwen3-0.6B + 0,7 GiB KV-Cache
 IMAGES_GB = 40            # vLLM ~36 GB + LiteLLM ~1,7 GB + Postgres
+
+
+def power_state() -> Optional[dict]:
+    """Netzteil oder Akku? Liest /sys/class/power_supply (Linux, auch WSL). None = kein Akku (Server, Desktop)."""
+    base = "/sys/class/power_supply"
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return None
+
+    def rd(name: str, f: str) -> Optional[str]:
+        try:
+            with open(os.path.join(base, name, f)) as fh:
+                return fh.read().strip()
+        except OSError:
+            return None
+
+    mains_online, bats = None, []
+    for n in names:
+        t = rd(n, "type")
+        if t == "Mains":
+            mains_online = bool(mains_online) or rd(n, "online") == "1"
+        elif t == "Battery":
+            bats.append((rd(n, "status"), rd(n, "capacity")))
+    if not bats:
+        return None
+    on_battery = any(st == "Discharging" for st, _ in bats) or mains_online is False
+    cap = next((int(c) for _, c in bats if (c or "").isdigit()), None)
+    return {"on_battery": on_battery, "capacity": cap}
 
 
 def run(cmd: list[str], timeout: int = 25) -> tuple[int, str, str]:
@@ -210,13 +240,34 @@ def check(gpu_container: bool = False) -> dict:
     # ------------------------------------------------------------------ Einrichtung
     env_file = DEPLOY / ".env"
     secrets_ok = (DEPLOY / "secrets" / "cache_salt_secret").exists() and (DEPLOY / "secrets" / "watermark_key").exists()
-    init_ok = env_file.exists() and bool(read_env().get("LITELLM_MASTER_KEY")) and secrets_ok
-    add("init", "Einrichtung (Schlüssel)", "ok" if init_ok else "fail",
-        "deploy/.env und deploy/secrets/ vorhanden" if init_ok else "noch nicht eingerichtet",
-        "" if init_ok else "„Einrichten“ (./scenario.sh init)")
-    prof_ok = (ROOT / "data" / "profiles" / "lokal-litellm.json").exists()
+    env = read_env() if env_file.exists() else {}
+    init_ok = env_file.exists() and bool(env.get("LITELLM_MASTER_KEY")) and secrets_ok
+    pool_ok = bool(env.get("TENANT_POOL_SECRET"))
+    if init_ok and not pool_ok:
+        add("init", "Einrichtung (Schlüssel)", "warn", "es fehlen die Pool-Mandanten (neu seit dem Test „Kosten der Cache-Trennung“)",
+            "„Einrichten“ erneut ausführen (./scenario.sh init) – bestehende Schlüssel bleiben, danach Szenario neu starten.")
+    else:
+        add("init", "Einrichtung (Schlüssel)", "ok" if init_ok else "fail",
+            "deploy/.env und deploy/secrets/ vorhanden" if init_ok else "noch nicht eingerichtet",
+            "" if init_ok else "„Einrichten“ (./scenario.sh init)")
+    prof_p = ROOT / "data" / "profiles" / "lokal-litellm.json"
+    prof_ok = prof_p.exists()
+    try:
+        n_pool = len(json.loads(prof_p.read_text()).get("tenant_pool") or []) if prof_ok else 0
+    except (OSError, ValueError):
+        n_pool = 0
     add("profile", "Endpunkt-Profile", "ok" if prof_ok else "warn",
-        "lokal-litellm, lokal-vllm-direkt" if prof_ok else "fehlen", "" if prof_ok else "„Einrichten“ legt sie an.")
+        (f"lokal-litellm (3 + {n_pool} Mandanten), lokal-vllm-direkt" if prof_ok else "fehlen"),
+        "" if prof_ok else "„Einrichten“ legt sie an.")
+
+    # ------------------------------------------------------------------ Stromversorgung (Laptop)
+    pw = power_state()
+    if pw is not None:
+        if pw["on_battery"]:
+            add("power", "Stromversorgung", "warn", f"läuft auf Akku ({pw['capacity']} %) – CPU und GPU takten herunter",
+                "Netzteil anschließen, sonst sind die Messwerte langsamer und nicht vergleichbar.")
+        else:
+            add("power", "Stromversorgung", "ok", "am Netzteil")
 
     # ------------------------------------------------------------------ Ports
     if docker_ok:

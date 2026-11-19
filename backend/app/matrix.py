@@ -13,9 +13,10 @@ import statistics
 from datetime import datetime
 from decimal import Decimal
 
-from . import storage
+from . import stats, storage
 
-MATRIX_TESTS = ("isolation_overhead", "prefix_cache_leak", "resource_contention", "hardening_check", "watermark")
+MATRIX_TESTS = ("isolation_overhead", "salt_cost", "prefix_cache_leak", "resource_contention", "hardening_check",
+                "watermark")
 
 # key, Beschriftung, Einheit, besser ("lower"/"higher"/None), Bereich, Nachkommastellen, Test
 METRICS = [
@@ -29,6 +30,20 @@ METRICS = [
     ("cache_hit_pct", "Cache-Treffer", "%", "higher", "leistung", 1, "isolation_overhead"),
     ("rejected_pct", "abgewiesen", "%", "lower", "leistung", 1, "isolation_overhead"),
     ("error_rate_pct", "Fehler", "%", "lower", "leistung", 1, "isolation_overhead"),
+    # abgeleitet: Kostenannahme (Einstellungen → Kosten) / Spitzendurchsatz
+    ("cost_per_mtok_eur", "Kosten je 1 Mio. Output-Tokens", "€", "lower", "leistung", 3, "isolation_overhead"),
+
+    ("salt_new_tenant_ttft_ms", "TTFT neuer Mandant", "ms", "lower", "kosten", 0, "salt_cost"),
+    ("salt_new_tenant_extra_ms", "Aufschlag neuer Mandant", "ms", "lower", "kosten", 0, "salt_cost"),
+    ("salt_new_tenant_hit_pct", "Vorlage aus fremdem Cache", "%", None, "kosten", 0, "salt_cost"),
+    ("salt_cold_template_tokens", "Vorlage Kaltstart", "Tok", None, "kosten", 0, "salt_cost"),
+    ("salt_tenants_max", "Mandanten (max.)", "", None, "kosten", 0, "salt_cost"),
+    ("salt_hit_pct_nmax", "Cache-Treffer bei max. Mandanten", "%", "higher", "kosten", 1, "salt_cost"),
+    ("salt_ttft_p50_nmax_ms", "TTFT p50 bei max. Mandanten", "ms", "lower", "kosten", 0, "salt_cost"),
+    ("salt_tps_nmax", "Durchsatz bei max. Mandanten", "Tok/s", "higher", "kosten", 1, "salt_cost"),
+    ("salt_tps_change_pct", "Durchsatz max. vs. 1 Mandant", "%", "higher", "kosten", 1, "salt_cost"),
+    ("salt_cost_nmax_eur", "Kosten je 1 Mio. Output-Tokens bei max. Mandanten", "€", "lower", "kosten", 3, "salt_cost"),
+    ("salt_tenants_ok", "Mandanten ohne Cache-Einbruch", "", "higher", "kosten", 0, "salt_cost"),
 
     ("prefix_auc", "AUC Seitenkanal", "", None, "vertraulichkeit", 3, "prefix_cache_leak"),
     ("prefix_auc_dev", "Unterscheidbarkeit max(AUC, 1−AUC)", "", "lower", "vertraulichkeit", 3, "prefix_cache_leak"),
@@ -52,7 +67,12 @@ METRICS = [
     ("wm_fpr", "Fehlalarme", "%", "lower", "kennzeichnung", 1, "watermark"),
     ("wm_optout_blocked", "Opt-out verhindert", "", "higher", "kennzeichnung", None, "watermark"),
 ]
-AREAS = {"leistung": "Leistung (Mehrmandanten-Last)", "vertraulichkeit": "Vertraulichkeit (Prefix-Cache-Seitenkanal)",
+# Kennzahlen, bei denen Δ % zur Referenz nichts aussagt (Differenzen, Anteile nahe 0, Mengenangaben)
+NO_DELTA = {"salt_new_tenant_extra_ms", "salt_new_tenant_hit_pct", "salt_cold_template_tokens", "salt_tenants_max",
+            "salt_tps_change_pct", "salt_tenants_ok"}
+AREAS = {"leistung": "Leistung (Mehrmandanten-Last)",
+         "kosten": "Kosten der Cache-Trennung (neuer Mandant, viele Mandanten)",
+         "vertraulichkeit": "Vertraulichkeit (Prefix-Cache-Seitenkanal)",
          "verfuegbarkeit": "Verfügbarkeit (Noisy Neighbor)", "haertung": "Härtung & Angriffsfläche",
          "kennzeichnung": "Kennzeichnung (KI-VO Art. 50)"}
 
@@ -67,6 +87,30 @@ def _group(cfg: dict) -> tuple[str, dict]:
                                                  "profile_id": prof.get("id"), "profile_name": pname}
     return f"-|{prof.get('id')}", {"scenario": None, "scenario_name": None, "profile_id": prof.get("id"),
                                     "profile_name": pname}
+
+
+def cost_settings() -> dict:
+    return (storage.get_settings() or {}).get("cost") or {}
+
+
+def derive(values: dict, cost: dict) -> dict:
+    """Kosten je 1 Mio. Output-Tokens aus dem Durchsatz – mit den aktuellen Annahmen (Einstellungen → Kosten)."""
+    for src, dst in (("peak_output_tps", "cost_per_mtok_eur"), ("salt_tps_nmax", "salt_cost_nmax_eur")):
+        v = values.get(src)
+        if _isnum(v) and v > 0 and cost:
+            e = stats.eur_per_million(v, cost)
+            if e is not None:
+                values[dst] = round(e, 4)
+    return values
+
+
+def cost_note(cost: dict | None = None) -> str:
+    c = cost if cost is not None else cost_settings()
+    if not c:
+        return ""
+    return (f"Kosten je 1 Mio. Output-Tokens = ({num_de(c.get('machine_eur_per_h', 0), 2)} €/h Maschine + "
+            f"{num_de(c.get('power_kw', 0), 2)} kW × {num_de(c.get('power_eur_per_kwh', 0), 2)} €/kWh) / "
+            f"(Durchsatz × 3 600 s × {c.get('utilization_pct')} % Auslastung); Annahmen unter Einstellungen → Kosten")
 
 
 def build(since: str | None = None, include_unfinished: bool = False) -> dict:
@@ -91,12 +135,15 @@ def build(since: str | None = None, include_unfinished: bool = False) -> dict:
         for k, v in (summ.get("matrix") or {}).items():
             g["values"].setdefault(k, v)
     out = sorted(groups.values(), key=lambda g: (g["scenario"] is None, g["scenario"] or "", g["profile_name"] or ""))
+    cost = cost_settings()
     for g in out:
         g["label"] = (f"{g['scenario']} – {g['scenario_name']}" if g["scenario"] else g["profile_name"])
+        derive(g["values"], cost)
     return {
         "groups": out,
-        "metrics": [{"key": k, "label": lab, "unit": u, "better": b, "area": a, "digits": d, "test": t}
-                    for k, lab, u, b, a, d, t in METRICS],
+        "cost_note": cost_note(cost),
+        "metrics": [{"key": k, "label": lab, "unit": u, "better": b, "area": a, "digits": d, "test": t,
+                     "delta": k not in NO_DELTA} for k, lab, u, b, a, d, t in METRICS],
         "areas": AREAS,
         "tests": list(MATRIX_TESTS),
     }
@@ -107,9 +154,18 @@ def build(since: str | None = None, include_unfinished: bool = False) -> dict:
 # Die Oberfläche holt CSV/LaTeX von hier (/api/matrix/export) – es gibt nur EINE Implementierung.
 
 
-PERF_KEYS = ("output_tps", "ttft_p50_ms", "tpot_p50_ms")
-SUMMARY_KEYS = ("prefix_auc", "prefix_auc_dev", "prefix_d", "slowdown_sn", "jain_index", "hardening_score",
-                "wm_detect_rate", "wm_fpr", "output_tps", "ttft_p50_ms", "tpot_p50_ms", "cache_hit_pct")
+PERF_KEYS = ("output_tps", "ttft_p50_ms", "tpot_p50_ms", "cost_per_mtok_eur")
+COST_DELTA_KEYS = ("salt_new_tenant_ttft_ms", "salt_ttft_p50_nmax_ms", "salt_tps_nmax", "salt_cost_nmax_eur")
+SUMMARY_SECTIONS = [
+    ("Sicherheit", ("prefix_auc", "prefix_auc_dev", "prefix_d", "slowdown_sn", "jain_index", "hardening_score",
+                    "wm_detect_rate", "wm_fpr")),
+    ("Leistung (3 Mandanten, eingeschwungen)", ("output_tps", "ttft_p50_ms", "tpot_p50_ms", "cache_hit_pct",
+                                                "cost_per_mtok_eur")),
+    ("Kosten der Cache-Trennung", ("salt_new_tenant_ttft_ms", "salt_new_tenant_extra_ms", "salt_new_tenant_hit_pct",
+                                   "salt_tenants_max", "salt_hit_pct_nmax", "salt_ttft_p50_nmax_ms", "salt_tps_nmax",
+                                   "salt_tps_change_pct", "salt_cost_nmax_eur", "salt_tenants_ok")),
+]
+SUMMARY_KEYS = tuple(k for _, ks in SUMMARY_SECTIONS for k in ks)
 
 
 def _isnum(v) -> bool:
@@ -195,7 +251,7 @@ def to_csv(data: dict) -> str:
 
 def _tex(s) -> str:
     s = re.sub(r"([%&_#$])", r"\\\1", str(s))
-    s = s.replace("×", "$\\times$").replace("≥", "$\\geq$").replace("–", "--")
+    s = s.replace("×", "$\\times$").replace("≥", "$\\geq$").replace("–", "--").replace("€", "\\texteuro{}")
     return re.sub(r"^-(?=\d)", "$-$", s)    # echtes Minuszeichen statt Bindestrich
 
 
@@ -222,25 +278,54 @@ def to_latex(data: dict, base_key: str | None = None, now: datetime | None = Non
                          dcell("output_tps", g), dcell("ttft_p50_ms", g), dcell("tpot_p50_ms", g)]) + " \\\\"
              for g in groups]
     stamp = (now or datetime.now()).strftime("%d.%m.%Y, %H:%M:%S")
-    return "\n".join([
+    ref = _tex(_short(B) if B else "Referenz")
+    out = [
         "% Erzeugt von der LLM-Inferenz-Testplattform (Konfigurationsvergleich), " + stamp,
         "% benötigt \\usepackage{booktabs}. Passt so auf A4 mit 2,5 cm Rand; sonst die tabular-Umgebung in",
         "% \\resizebox{\\textwidth}{!}{...} (Paket graphicx) einschließen.",
         "\\begin{table}[htbp]", "\\centering", "\\footnotesize", "\\setlength{\\tabcolsep}{2.5pt}",
         "\\begin{tabular}{llrrrrrrrrr}", "\\toprule",
         " & & \\multicolumn{2}{c}{Seitenkanal} & \\multicolumn{2}{c}{Verfügbarkeit} & Härtung & WZ & "
-        "\\multicolumn{3}{c}{$\\Delta$ zu " + _tex(_short(B) if B else "Referenz") + "} \\\\",
+        "\\multicolumn{3}{c}{$\\Delta$ zu " + ref + "} \\\\",
         "\\cmidrule(lr){3-4}\\cmidrule(lr){5-6}\\cmidrule(lr){9-11}",
         "ID & Konfiguration & AUC & $d$ & $S_N$ & $J$ & bestanden & erkannt & Durchsatz & TTFT p50 & TPOT p50 \\\\",
         "\\midrule", *lines, "\\bottomrule", "\\end{tabular}",
         "\\caption{Sicherheit und Leistungskosten der Konfigurationen (neuester Lauf je Test)}",
-        "\\label{tab:konfigurationsvergleich}", "\\end{table}"])
+        "\\label{tab:konfigurationsvergleich}", "\\end{table}"]
+
+    # Kosten der Cache-Trennung: eigene Tabelle, sobald Kosten oder der Salting-Test vorliegen
+    ck = ("cost_per_mtok_eur", "salt_new_tenant_ttft_ms", "salt_tps_nmax")
+    if any(g["values"].get(k) is not None for g in groups for k in ck):
+        nmax = max((g["values"].get("salt_tenants_max") or 0 for g in groups), default=0)
+        lc = max((g["values"].get("salt_cold_template_tokens") or 0 for g in groups), default=0)
+        clines = [" & ".join([_tex(_short(g)), _tex(g.get("scenario_name") or g.get("profile_name")),
+                              cell("cost_per_mtok_eur", g), dcell("cost_per_mtok_eur", g),
+                              cell("salt_new_tenant_ttft_ms", g), cell("salt_new_tenant_extra_ms", g),
+                              cell("salt_hit_pct_nmax", g), cell("salt_ttft_p50_nmax_ms", g),
+                              dcell("salt_tps_nmax", g), cell("salt_cost_nmax_eur", g),
+                              dcell("salt_cost_nmax_eur", g)]) + " \\\\" for g in groups]
+        out += [
+            "", "% " + (cost_note() or "Kosten je 1 Mio. Output-Tokens: Annahmen unter Einstellungen → Kosten"),
+            "\\begin{table}[htbp]", "\\centering", "\\footnotesize", "\\setlength{\\tabcolsep}{2.5pt}",
+            "\\begin{tabular}{llrrrrrrrrr}", "\\toprule",
+            " & & \\multicolumn{2}{c}{3 Mandanten} & \\multicolumn{2}{c}{neuer Mandant"
+            + (f" ({lc} Tok.)" if lc else "") + "} & \\multicolumn{5}{c}{"
+            + (f"{nmax} Mandanten" if nmax else "viele Mandanten") + ", gemeinsame Vorlage} \\\\",
+            "\\cmidrule(lr){3-4}\\cmidrule(lr){5-6}\\cmidrule(lr){7-11}",
+            "ID & Konfiguration & \\texteuro/1 Mio. & $\\Delta$ & TTFT & Aufschlag & Treffer & TTFT p50 & Durchsatz $\\Delta$ "
+            "& \\texteuro/1 Mio. & $\\Delta$ \\\\",
+            "\\midrule", *clines, "\\bottomrule", "\\end{tabular}",
+            "\\caption{Kosten der Cache-Trennung je Konfiguration ($\\Delta$ zu " + ref + "; \\texteuro/1 Mio. = Kosten je "
+            "1 Mio. Output-Tokens)}",
+            "\\label{tab:kosten-cache-trennung}", "\\end{table}"]
+    return "\n".join(out)
 
 
 def runs_long(since: str | None = None, scenarios: list[str] | None = None) -> list[dict]:
     """Alle fertigen Läufe der Vergleichstests (auch Wiederholungen), älteste zuerst."""
     from .runner import get_summary
     out = []
+    cost = cost_settings()
     for r in storage.list_runs():
         if r.get("test") not in MATRIX_TESTS or r.get("status") != "fertig":
             continue
@@ -254,7 +339,7 @@ def runs_long(since: str | None = None, scenarios: list[str] | None = None) -> l
         summ = get_summary(rd)
         out.append({"scenario": sc.get("id"), "scenario_name": sc.get("name"), "test": r["test"], "run_id": r["id"],
                     "started_at": r.get("started_at"), "verdict": summ.get("verdict"),
-                    "batch_label": cfg.get("batch_label") or "", "values": summ.get("matrix") or {}})
+                    "batch_label": cfg.get("batch_label") or "", "values": derive(dict(summ.get("matrix") or {}), cost)})
     out.sort(key=lambda x: x["started_at"] or "")
     return out
 
@@ -307,26 +392,37 @@ def summary_md(rows: list[dict], title: str, notes: list[str] | None = None) -> 
             s += " ± " + num_de(a["sd"], d)
         return s + (f" (n={a['n']})" if a["n"] > 1 else "")
 
-    keys = [k for k in SUMMARY_KEYS if any(k in agg.get(sc, {}) for sc in scen)]
+    def head(k):
+        return M[k]["label"] + (f" [{M[k]['unit']}]" if M[k]["unit"] else "")
+
     out = [f"# {title}", ""]
     out += [f"- {n}" for n in (notes or [])]
     out += ["", "## Kennzahlen je Szenario", "",
-            "Mittelwert ± Standardabweichung über die Wiederholungen (n = Anzahl Läufe).", "",
-            "| Szenario | " + " | ".join(M[k]["label"] + (f" [{M[k]['unit']}]" if M[k]["unit"] else "") for k in keys) + " |",
-            "|---|" + "---:|" * len(keys)]
-    for sc in scen:
-        out.append(f"| {sc} {names.get(sc) or ''} | " + " | ".join(cell(sc, k) for k in keys) + " |")
+            "Mittelwert ± Standardabweichung über die Wiederholungen (n = Anzahl Läufe)."]
+    for sec, ks in SUMMARY_SECTIONS:
+        keys = [k for k in ks if any(k in agg.get(sc, {}) for sc in scen)]
+        if not keys:
+            continue
+        out += ["", f"### {sec}", "", "| Szenario | " + " | ".join(head(k) for k in keys) + " |",
+                "|---|" + "---:|" * len(keys)]
+        for sc in scen:
+            out.append(f"| {sc} {names.get(sc) or ''} | " + " | ".join(cell(sc, k) for k in keys) + " |")
     ref = "K0" if "K0" in agg else (scen[0] if scen else None)
     if ref:
-        out += ["", f"## Leistung gegenüber {ref} (Δ % der Mittelwerte)", "",
-                "| Szenario | " + " | ".join(M[k]["label"] for k in PERF_KEYS) + " |", "|---|" + "---:|" * len(PERF_KEYS)]
-        for sc in scen:
-            cells = []
-            for k in PERF_KEYS:
-                a, b = agg.get(sc, {}).get(k), agg.get(ref, {}).get(k)
-                d = delta(M[k], a and a.get("mean"), b and b.get("mean"))
-                cells.append("Referenz" if sc == ref else (dtxt(d) if d else "–"))
-            out.append(f"| {sc} | " + " | ".join(cells) + " |")
+        for sec, ks in ((f"Leistung und Kosten gegenüber {ref}", PERF_KEYS),
+                        (f"Kosten der Cache-Trennung gegenüber {ref}", COST_DELTA_KEYS)):
+            keys = [k for k in ks if any(k in agg.get(sc, {}) for sc in scen)]
+            if not keys:
+                continue
+            out += ["", f"## {sec} (Δ % der Mittelwerte)", "",
+                    "| Szenario | " + " | ".join(M[k]["label"] for k in keys) + " |", "|---|" + "---:|" * len(keys)]
+            for sc in scen:
+                cells = []
+                for k in keys:
+                    a, b = agg.get(sc, {}).get(k), agg.get(ref, {}).get(k)
+                    d = delta(M[k], a and a.get("mean"), b and b.get("mean"))
+                    cells.append("Referenz" if sc == ref else (dtxt(d) if d else "–"))
+                out.append(f"| {sc} | " + " | ".join(cells) + " |")
     out += ["", "## Läufe", "", "| Start | Szenario | Test | Ergebnis | Lauf |", "|---|---|---|---|---|"]
     for r in rows:
         out.append(f"| {r['started_at']} | {r['scenario'] or '–'} | {r['test']} | {r['verdict'] or '–'} | {r['run_id']} |")

@@ -64,10 +64,10 @@ cd llm-testbench
   <ol>
     <li>Szenarien wählen – vorausgewählt sind alle, die auf diese GPU passen.</li>
     <li>Suite „Konfigurationsvergleich (je Szenario)“ lassen. Sie misst Härtung, Prefix-Cache-Seitenkanal, Leistungskosten der
-      Isolation, Wasserzeichen und Ressourcenverdrängung (Noisy Neighbor).</li>
+      Isolation, Kosten der Cache-Trennung (Salting), Wasserzeichen und Ressourcenverdrängung (Noisy Neighbor).</li>
     <li>Wiederholungen: <b>1</b> für einen schnellen Überblick, <b>3</b> für die Zahlen der Arbeit (Mittelwert ± Streuung).</li>
-    <li><b>Gesamtlauf starten.</b> Dauer: etwa 3 min Start + 13–15 min Messung je Szenario und Wiederholung – bei sechs Szenarien
-      und einer Wiederholung rund 1,5 h. Der Browser darf zu; der Lauf geht weiter, solange die Testplattform selbst läuft. Den laufenden Test zeigt „Laufender Test“ im Menü.</li>
+    <li><b>Gesamtlauf starten.</b> Dauer: etwa 3 min Start + 15–17 min Messung je Szenario und Wiederholung – bei sechs Szenarien
+      und einer Wiederholung rund 2 h, mit drei Wiederholungen rund 5 h. Der Browser darf zu; der Lauf geht weiter, solange die Testplattform selbst läuft. Den laufenden Test zeigt „Laufender Test“ im Menü.</li>
   </ol>
   <div>Ohne Browser, z. B. in <code>tmux</code> auf dem Server: <code>./deploy/scenario.sh run-all -n 3</code>
     (Auswahl: <code>-s K0,K1,K4</code>; Stand: <code>--status</code>; Abbruch: <code>--abbrechen</code>).</div>
@@ -83,6 +83,11 @@ cd llm-testbench
     <li>Nach jedem Gesamtlauf liegen die Dateien zusätzlich in <code>data/exports/&lt;Datum&gt;/</code> (Download auch auf der Seite Steuerung):
       <code>zusammenfassung.md</code> (Mittelwert ± Standardabweichung je Szenario, Δ % zu K0), <code>konfigurationsvergleich.tex</code>/<code>.csv</code>,
       <code>laeufe.csv</code> (jeder einzelne Lauf).</li>
+    <li><b>Kosten:</b> Die Bilanz auf <a href="#/konfigurationen">Konfigurationen</a> zeigt neben Durchsatz und Wartezeit die
+      Kosten je 1 Mio. Output-Tokens als Δ % zu K0. Der Abschnitt „Kosten der Cache-Trennung“ zeigt, was das Salting kostet:
+      wie lange ein <i>neuer</i> Mandant auf eine Vorlage wartet, die ein anderer schon berechnet hat, und was bei 1 bis 30
+      Mandanten mit gemeinsamer Vorlage passiert (Cache-Treffer, Wartezeit, Durchsatz, €). Die Preisannahmen (Maschine €/h,
+      Strom, Auslastung) stehen unter <a href="#/einstellungen">Einstellungen</a> und gelten rückwirkend.</li>
     <li><a href="#/ergebnisse">Ergebnisse</a>: jeder Lauf mit Diagrammen und Erklärung, wie der Angriff funktioniert.</li>
   </ul>
 </div>
@@ -115,6 +120,8 @@ cd llm-testbench
     <tr><td>„GPU im Container“ rot</td><td>NVIDIA Container Toolkit installieren:
       <code>sudo nvidia-ctk runtime configure --runtime=docker</code>, Docker neu starten.</td></tr>
     <tr><td>Port 4000/8000/8090 belegt</td><td>Anderes Programm oder fremden Container beenden (<code>docker ps</code>).</td></tr>
+    <tr><td>Kosten der Cache-Trennung: „Nur 3 Mandanten-Keys vorhanden“</td>
+      <td>Die Pool-Mandanten fehlen (ältere Einrichtung): „Einrichten“ erneut ausführen, dann das Szenario neu starten.</td></tr>
     <tr><td>Gesamtlauf teilweise fehlgeschlagen</td><td>Erneut starten und nur die fehlenden Szenarien wählen – ausgewertet wird je Szenario der neueste Lauf.</td></tr>
     <tr><td>„Steuerung nur lokal oder per SSH-Tunnel“</td><td>Die Seite über <code>http://localhost:8080</code> öffnen (auf Servern per SSH-Tunnel).</td></tr>
   </tbody>

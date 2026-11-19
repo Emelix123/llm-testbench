@@ -129,9 +129,9 @@ BUILTIN_SUITES = [
     {"id": "dauerlast", "name": "Dauerlast", "duration": "1–4 h",
      "items": [{"test": "endurance"}, {"test": "spike"}, {"test": "overload"}], "builtin": True,
      "note": "Nutzt die Kapazität aus dem letzten Kapazitäts-Sweep dieses Endpunkts."},
-    {"id": "konfigurationsvergleich", "name": "Konfigurationsvergleich (je Szenario)", "duration": "ca. 15–20 min",
+    {"id": "konfigurationsvergleich", "name": "Konfigurationsvergleich (je Szenario)", "duration": "ca. 17–20 min",
      "items": [{"test": "hardening_check"}, {"test": "prefix_cache_leak"}, {"test": "isolation_overhead"},
-               {"test": "watermark"}, {"test": "resource_contention"}], "builtin": True,
+               {"test": "salt_cost"}, {"test": "watermark"}, {"test": "resource_contention"}], "builtin": True,
      "note": "Einmal je Szenario K0–K6 – am einfachsten als Gesamtlauf auf der Seite „Steuerung“. Ergebnis: Seite "
              "„Konfigurationen“. Wasserzeichen braucht den Detektor (K4/K6 oder Detektor auf der Seite „Steuerung“)."},
     {"id": "abnahme", "name": "Abnahme", "duration": "mehrere Stunden",

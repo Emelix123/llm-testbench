@@ -7,12 +7,17 @@ Grenzen aus einem vorigen Szenario mit sich.
 Umgebung:
   LITELLM_URL, LITELLM_MASTER_KEY
   TENANT_A_KEY / TENANT_B_KEY / TENANT_C_KEY
+  TENANT_POOL_SIZE, TENANT_POOL_SECRET  weitere Mandanten pool-01 … pool-NN (Test „Kosten der
+                        Cache-Trennung“); Keys = HMAC(TENANT_POOL_SECRET, i), wie in scenario.sh profile
   TENANT_RPM, TENANT_TPM, TENANT_MAX_PARALLEL   0 = keine Grenze (Szenario K3/K4 setzen Werte)
   TENANT_ALLOWED_ROUTES  Komma-Liste erlaubter Routen; leer = LiteLLM-Standard (inkl. /vllm/*-Durchreichung!)
 Nur Standardbibliothek, damit es im LiteLLM-Image ohne Zusatzpakete läuft.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -28,6 +33,20 @@ TENANTS = [
     ("mandant-b", "Mandant B (Angreifer)", "TENANT_B_KEY"),
     ("mandant-c", "Mandant C (Last)", "TENANT_C_KEY"),
 ]
+
+
+def pool_tenants() -> list[tuple[str, str, str]]:
+    """(team_id, Alias, Key) der Pool-Mandanten. Gleiche Ableitung wie in deploy/scenario.sh (profile)."""
+    secret = os.environ.get("TENANT_POOL_SECRET", "").strip()
+    n = int(os.environ.get("TENANT_POOL_SIZE", "0") or 0)
+    if not secret or n <= 0:
+        return []
+    out = []
+    for i in range(1, n + 1):
+        mac = hmac.new(secret.encode(), f"llmtb-pool-key\x00{i}".encode(), hashlib.sha256).digest()
+        key = f"sk-pool-{i:02d}-" + base64.urlsafe_b64encode(mac).rstrip(b"=").decode()[:32]
+        out.append((f"pool-{i:02d}", f"Pool-Mandant {i:02d}", key))
+    return out
 
 
 def call(method: str, path: str, body: dict | None = None) -> tuple[int, dict | str]:
@@ -63,11 +82,8 @@ def main() -> int:
     lim = {"rpm_limit": limit("TENANT_RPM"), "tpm_limit": limit("TENANT_TPM"),
            "max_parallel_requests": limit("TENANT_MAX_PARALLEL")}
     scenario = os.environ.get("LLMTB_SCENARIO", "?")
-    for team_id, alias, env in TENANTS:
-        key = os.environ.get(env, "")
-        if not key:
-            print(f"{env} fehlt – {team_id} übersprungen", file=sys.stderr)
-            continue
+
+    def ensure(team_id: str, alias: str, key: str) -> dict | None:
         call("POST", "/team/new", {"team_id": team_id, "team_alias": alias})  # existiert evtl. schon
         call("POST", "/key/delete", {"keys": [key]})
         body = {"key": key, "team_id": team_id, "key_alias": f"{team_id}-{scenario.lower()}",
@@ -77,9 +93,25 @@ def main() -> int:
         st, resp = call("POST", "/key/generate", body)
         if st != 200:
             print(f"{team_id}: Key anlegen fehlgeschlagen ({st}): {resp}", file=sys.stderr)
+            return None
+        return {k: v for k, v in body.items() if k not in ("key", "metadata")}
+
+    for team_id, alias, env in TENANTS:
+        key = os.environ.get(env, "")
+        if not key:
+            print(f"{env} fehlt – {team_id} übersprungen", file=sys.stderr)
+            continue
+        shown = ensure(team_id, alias, key)
+        if shown is None:
             return 1
-        shown = {k: v for k, v in body.items() if k not in ("key", "metadata")}
         print(f"[llmtb] {alias}: {json.dumps(shown, ensure_ascii=False)}")
+
+    pool = pool_tenants()
+    for team_id, alias, key in pool:
+        if ensure(team_id, alias, key) is None:
+            return 1
+    if pool:
+        print(f"[llmtb] Pool-Mandanten: {pool[0][0]} … {pool[-1][0]} ({len(pool)}, gleiche Grenzen wie oben)")
     return 0
 
 

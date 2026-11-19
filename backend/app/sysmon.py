@@ -28,6 +28,35 @@ class CpuMonitor:
 cpu = CpuMonitor()
 
 
+def power_state() -> dict | None:
+    """Netzteil oder Akku? Liest /sys/class/power_supply (Linux, auch WSL). None = kein Akku (Server, Desktop)."""
+    base = "/sys/class/power_supply"
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return None
+
+    def rd(name: str, f: str) -> str | None:
+        try:
+            with open(os.path.join(base, name, f)) as fh:
+                return fh.read().strip()
+        except OSError:
+            return None
+
+    mains_online, bats = None, []
+    for n in names:
+        t = rd(n, "type")
+        if t == "Mains":
+            mains_online = bool(mains_online) or rd(n, "online") == "1"
+        elif t == "Battery":
+            bats.append((rd(n, "status"), rd(n, "capacity")))
+    if not bats:
+        return None
+    on_battery = any(st == "Discharging" for st, _ in bats) or mains_online is False
+    cap = next((int(c) for _, c in bats if (c or "").isdigit()), None)
+    return {"on_battery": on_battery, "capacity": cap}
+
+
 class SleepInhibitor:
     """Verhindert den Ruhezustand, solange ein Lauf aktiv ist."""
 

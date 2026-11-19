@@ -53,6 +53,22 @@
     ['watermark', 'Wasserzeichen', 'wm_detect_rate'],
   ]
   const PERF = ['output_tps', 'ttft_p50_ms', 'tpot_p50_ms']
+  // Bilanz: zusätzlich die Kosten (3 Mandanten / viele Mandanten mit gemeinsamer Vorlage)
+  const BILANZ_PERF = [...PERF, 'cost_per_mtok_eur', 'salt_cost_nmax_eur']
+  const BILANZ_LABEL = { cost_per_mtok_eur: '€/1 Mio. Tok', salt_cost_nmax_eur: '€/1 Mio. Tok, max. Mandanten' }
+  const nmax = $derived(Math.max(0, ...groups.map((g) => g.values.salt_tenants_max || 0)))
+  const costChart = $derived(groups.some((g) => g.values.cost_per_mtok_eur != null || g.values.salt_cost_nmax_eur != null) ? {
+    id: 'cost', type: 'bar', title: 'Kosten je 1 Mio. Output-Tokens (€)', categories: groups.map(short), labels: true,
+    y: { name: '€ je 1 Mio. Output-Tokens' },
+    series: [{ name: '3 Mandanten (eingeschwungen)', data: groups.map((g) => g.values.cost_per_mtok_eur ?? null) },
+             { name: `${nmax || 'viele'} Mandanten, gemeinsame Vorlage`, data: groups.map((g) => g.values.salt_cost_nmax_eur ?? null) }],
+  } : null)
+  const coldChart = $derived(groups.some((g) => g.values.salt_new_tenant_ttft_ms != null) ? {
+    id: 'cold', type: 'bar', title: 'Neuer Mandant: Wartezeit auf das erste Token (ms)', categories: groups.map(short), labels: true,
+    y: { name: 'ms' },
+    series: [{ name: 'TTFT 1. Anfrage', data: groups.map((g) => g.values.salt_new_tenant_ttft_ms ?? null) },
+             { name: 'davon Aufschlag', data: groups.map((g) => g.values.salt_new_tenant_extra_ms ?? null) }],
+  } : null)
 
   const deltaChart = $derived.by(() => {
     if (!B || !groups.length) return null
@@ -106,7 +122,8 @@
   <button onclick={load} disabled={loading}>{loading ? 'Lade …' : 'Neu laden'}</button></div>
 
 <p class="muted small">Je Konfiguration (Szenario K0–K6, siehe <a href="#/steuerung">Steuerung</a>; sonst Endpunkt-Profil) zählt der neueste fertige Lauf
-  jedes Tests. Leistungswerte stammen aus „Leistungskosten der Isolation“ (Bezugs-Laststufe), Sicherheitswerte aus den Sicherheitstests.
+  jedes Tests. Leistungswerte stammen aus „Leistungskosten der Isolation“ (Bezugs-Laststufe), die Kosten der Cache-Trennung
+  (neuer Mandant, viele Mandanten mit gemeinsamer Vorlage) aus „Kosten der Cache-Trennung“, Sicherheitswerte aus den Sicherheitstests.
   Differenzen sind relativ zur gewählten Referenz; <span class="good">grün</span> = besser, <span class="bad">rot</span> = schlechter (± 2 % gilt als gleich).</p>
 
 <div class="panel grid2">
@@ -133,14 +150,14 @@
   <h2>Bilanz</h2>
   <div class="panel tablewrap"><table>
     <thead><tr><th>Konfiguration</th>{#each BILANZ as [, label]}<th>{label}</th>{/each}
-      {#each PERF as k}<th class="num">{M(k)?.label} Δ</th>{/each}</tr></thead>
+      {#each BILANZ_PERF as k}<th class="num">{BILANZ_LABEL[k] || M(k)?.label} Δ</th>{/each}</tr></thead>
     <tbody>{#each groups as g}
       <tr class:ref={g.key === base}>
         <td><b>{short(g)}</b> {g.scenario_name || ''}<div class="small muted">{g.profile_name}{massn(g) ? ' · ' + massn(g) : ''}</div></td>
         {#each BILANZ as [test, , key]}
           <td>{#if g.runs[test]}<a href={runLink(g, test)} class="cell"><Light verdict={verdictOf(g, test)} /> {fmt(M(key), g.values[key])}</a>{:else}<span class="muted">–</span>{/if}</td>
         {/each}
-        {#each PERF as k}
+        {#each BILANZ_PERF as k}
           {@const d = g.key === base ? null : delta(M(k), g.values[k], B?.values[k])}
           <td class="num {d?.cls || ''}">{g.key === base ? 'Referenz' : (d ? dtxt(d) : '–')}</td>
         {/each}
@@ -152,7 +169,10 @@
   <div class="cols">
     {#if aucChart}<div class="panel"><Chart spec={aucChart} /></div>{/if}
     {#if snChart}<div class="panel"><Chart spec={snChart} /></div>{/if}
+    {#if costChart}<div class="panel"><Chart spec={costChart} /></div>{/if}
+    {#if coldChart}<div class="panel"><Chart spec={coldChart} /></div>{/if}
   </div>
+  {#if data.cost_note}<p class="small muted">{data.cost_note}.</p>{/if}
 
   {#each Object.entries(data.areas) as [area, title]}
     {@const ms = metricsOf(area)}
@@ -164,7 +184,7 @@
           <tr class:ref={g.key === base}>
             <td><b>{short(g)}</b> <span class="small muted">{g.scenario_name || ''}</span></td>
             {#each ms as m}
-              {@const d = g.key === base ? null : delta(m, g.values[m.key], B?.values[m.key])}
+              {@const d = g.key === base || m.delta === false ? null : delta(m, g.values[m.key], B?.values[m.key])}
               <td class="num">{fmt(m, g.values[m.key])}{#if d}<div class="small {d.cls}">{dtxt(d)}</div>{/if}</td>
             {/each}
             <td class="small">{#if g.runs[ms[0].test]}<a href={runLink(g, ms[0].test)}>{dt(g.runs[ms[0].test].started_at)}</a>{:else}–{/if}</td>

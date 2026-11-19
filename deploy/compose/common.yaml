@@ -95,6 +95,8 @@ services:
       TENANT_A_KEY: ${TENANT_A_KEY:?./scenario.sh init ausführen}
       TENANT_B_KEY: ${TENANT_B_KEY:?./scenario.sh init ausführen}
       TENANT_C_KEY: ${TENANT_C_KEY:?./scenario.sh init ausführen}
+      TENANT_POOL_SIZE: ${TENANT_POOL_SIZE:-30}
+      TENANT_POOL_SECRET: ${TENANT_POOL_SECRET:-}
       TENANT_RPM: "0"
       TENANT_TPM: "0"
       TENANT_MAX_PARALLEL: "0"

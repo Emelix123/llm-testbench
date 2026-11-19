@@ -50,7 +50,7 @@ ssh -L 8080:localhost:8080 nutzer@server
 Dann in der Oberfläche (Menü → **Anleitung** erklärt jeden Schritt):
 
 1. **Steuerung → Systemprüfung**: alles ✘ zuerst beheben (unter jedem Punkt steht, wie).
-2. **Einrichten** (Schlüssel, GPU-Werte, Profile) und **Images & Modell laden** (~40 GB).
+2. **Einrichten** (Schlüssel, GPU-Werte, Profile mit 3 + 30 Mandanten-Keys) und **Images & Modell laden** (~40 GB).
 3. Nach dem Laden **Gründlich (GPU im Container)** prüfen.
 4. **Gesamtlauf**: Szenarien sind vorausgewählt (K5 nur ab 8 GB VRAM), Wiederholungen **3** für die
    Arbeit, starten. Der Browser darf zu – der Lauf geht weiter; später einfach den Tunnel neu öffnen.
@@ -85,9 +85,9 @@ Die Ergebnisse landen wie oben in `data/exports/<Datum>/`.
 |---|---|
 | Download Images + Modell | einmalig, je nach Leitung 10–30 min |
 | Szenario starten | ~3 min (beim allerersten Start etwas länger: Kernel-Kompilierung) |
-| Suite „Konfigurationsvergleich“ | ~13–15 min je Szenario und Wiederholung |
-| Gesamtlauf, 6 Szenarien × 1 | ~1,5 h |
-| Gesamtlauf, 6 Szenarien × 3 | ~4,5 h (mit K5: 7 Szenarien, ~5,5 h) |
+| Suite „Konfigurationsvergleich“ | ~15–17 min je Szenario und Wiederholung |
+| Gesamtlauf, 6 Szenarien × 1 | ~2 h |
+| Gesamtlauf, 6 Szenarien × 3 | ~5 h (mit K5: 7 Szenarien, ~6 h) |
 
 ## GPU-Einstellungen
 

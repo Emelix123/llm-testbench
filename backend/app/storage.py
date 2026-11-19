@@ -185,7 +185,9 @@ PROFILE_FIELDS = ("name", "base_url", "model", "tokenizer", "api_key_name",
                   "max_context", "capabilities", "notes",
                   # Sicherheitstests: weitere Mandanten-Keys {"angreifer": SECRET_NAME, "last": SECRET_NAME},
                   # direkte Engine-URL (Härtungstest) und Wasserzeichen-Detektor
-                  "tenant_keys", "engine_url", "watermark_detector_url", "scenario")
+                  "tenant_keys", "engine_url", "watermark_detector_url", "scenario",
+                  # weitere Mandanten (Liste von Secret-Namen), angelegt von deploy/scenario.sh profile
+                  "tenant_pool")
 TENANT_ROLES = ("angreifer", "last")
 
 
@@ -207,6 +209,11 @@ def save_profile(data: dict) -> dict:
     existing = get_profile(pid) or {}
     if "capabilities" not in prof and existing.get("capabilities"):
         prof["capabilities"] = existing["capabilities"]
+    pool = prof.get("tenant_pool") if "tenant_pool" in data else existing.get("tenant_pool")
+    if isinstance(pool, list) and pool:
+        prof["tenant_pool"] = [str(n) for n in pool if isinstance(n, str) and n]
+    else:
+        prof.pop("tenant_pool", None)
     write_json(PROFILES / f"{pid}.json", prof)
     prof["id"] = pid
     return prof

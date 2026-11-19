@@ -19,7 +19,7 @@ Schritt durch alles Weitere. Bedient wird alles auf der Seite **Steuerung**:
 
 1. **Systemprüfung** – Docker, GPU, Images, Modell, Einrichtung (läuft beim Öffnen automatisch).
 2. **Einrichten** und **Images & Modell laden** – einmalig je Rechner (~40 GB Download).
-3. **Gesamtlauf** – misst alle Szenarien K0–K6 nacheinander; Dauer ~15–20 min je Szenario.
+3. **Gesamtlauf** – misst alle Szenarien K0–K6 nacheinander; Dauer ~20 min je Szenario und Wiederholung.
 4. Ergebnisse auf der Seite **Konfigurationen** (LaTeX-/CSV-Export) und in `data/exports/`.
 
 | Befehl | Wofür |
@@ -33,10 +33,15 @@ Umgebung über [uv](https://docs.astral.sh/uv/) mit Python 3.12 an – ohne root
 Windows ohne WSL: `start.bat` (nur Messen entfernter Endpunkte; die Szenarien brauchen Linux/WSL).
 Das gebaute Frontend liegt in `frontend/dist`; npm braucht man nur, um es neu zu bauen.
 
-**Auf einem Server** (GPU-Rechner ohne Bildschirm): [`docs/SERVER.md`](docs/SERVER.md) – kurz:
-`./start.sh --hintergrund` auf dem Server, `ssh -L 8080:localhost:8080 nutzer@server` auf dem eigenen
-Rechner, dann <http://localhost:8080> im eigenen Browser. Ohne Browser geht der Gesamtlauf auch im
-Terminal: `./deploy/scenario.sh run-all -n 3`.
+**Auf einem Server** (GPU-Rechner ohne Bildschirm, ausführlich in [`docs/SERVER.md`](docs/SERVER.md)):
+
+```bash
+git clone https://github.com/Emelix123/llm-testbench.git && cd llm-testbench && ./start.sh --hintergrund
+```
+
+Die Testplattform läuft dann weiter, auch wenn die SSH-Sitzung endet. Auf dem eigenen Rechner
+`ssh -L 8080:localhost:8080 nutzer@server` ausführen und <http://localhost:8080> im eigenen Browser
+öffnen. Ohne Browser geht der Gesamtlauf auch im Terminal: `./deploy/scenario.sh run-all -n 3`.
 
 ### Ohne GPU ausprobieren
 
@@ -59,13 +64,13 @@ WSL-Einrichtung: [`docs/WSL-SETUP.md`](docs/WSL-SETUP.md).
 
 Am einfachsten über die Weboberfläche: **Steuerung → Gesamtlauf**. Er startet jedes gewählte Szenario,
 misst die Suite **„Konfigurationsvergleich (je Szenario)“** (Härtung, Prefix-Cache-Seitenkanal,
-Leistungskosten der Isolation, Wasserzeichen, Ressourcenverdrängung) so oft wie angegeben, stoppt am
-Ende und schreibt nach `data/exports/<Datum>/`:
+Leistungskosten der Isolation, Kosten der Cache-Trennung, Wasserzeichen, Ressourcenverdrängung) so oft
+wie angegeben, stoppt am Ende und schreibt nach `data/exports/<Datum>/`:
 
 | Datei | Inhalt |
 |---|---|
-| `zusammenfassung.md` | Kennzahlen je Szenario als Mittelwert ± Standardabweichung über die Wiederholungen, Δ % zu K0, Liste aller Läufe |
-| `konfigurationsvergleich.tex` | LaTeX-Tabelle (booktabs, passt auf A4) – neuester Lauf je Szenario |
+| `zusammenfassung.md` | Sicherheit, Leistung und Kosten der Cache-Trennung je Szenario als Mittelwert ± Standardabweichung über die Wiederholungen, Δ % zu K0, Kostenannahme, Liste aller Läufe |
+| `konfigurationsvergleich.tex` | zwei LaTeX-Tabellen (booktabs, passen auf A4): Sicherheit/Leistung und Kosten der Cache-Trennung – neuester Lauf je Szenario |
 | `konfigurationsvergleich.csv` | dieselbe Tabelle für Excel/LibreOffice (Semikolon, Dezimalkomma) |
 | `laeufe.csv` | jeder einzelne Lauf mit allen Kennzahlen |
 
@@ -89,6 +94,9 @@ Im Terminal geht alles genauso (`deploy/scenario.sh`, Übersicht mit `./deploy/s
 |---|---|---|---|
 | TTFT, TPOT als Leistungsmetriken | 1.2.2 | Leistungskosten der Isolation | `ttft_p50_ms`, `tpot_p50_ms`, Durchsatz, Cache-Treffer |
 | Leistungsverlust je Gegenmaßnahme | 1.4.5 / Ausblick | Konfigurationen (Δ % zu K0) | alle Leistungswerte |
+| Kosten je Gegenmaßnahme in € | 1.4.5 / Ausblick | Konfigurationen (aus dem Spitzendurchsatz, Annahmen unter Einstellungen → Kosten) | `cost_per_mtok_eur` |
+| Kosten des Saltings: neuer Mandant | 1.3.4, CVE-2025-46570 | Kosten der Cache-Trennung, Kaltstart | `salt_new_tenant_ttft_ms`, `salt_new_tenant_extra_ms` |
+| Kosten des Saltings: viele Mandanten | 1.3.4 / 1.4.5 | Kosten der Cache-Trennung, 1–30 Mandanten (Δ % zu K0 bei gleicher Mandantenzahl) | `salt_hit_pct_nmax`, `salt_tps_nmax`, `salt_cost_nmax_eur`, `salt_tenants_ok` |
 | AUC Treffer/Fehlschlag (0,5 = Raten), 95%-KI | 1.3.4, CVE-2025-46570 | Prefix-Cache-Seitenkanal | `prefix_auc`, `prefix_auc_ci` |
 | Cohens d ruhig vs. unter Last (Abu Bakar: 0,78 → 0,21) | 1.3.4 | Prefix-Cache-Seitenkanal, `background_load` | `prefix_d`, `prefix_d_load` |
 | Granularität = Blockgröße | 1.2.3, 1.3.4 | Prefix-Cache-Seitenkanal, Sweep | AUC/`cached_tokens` je Übereinstimmung |
@@ -99,6 +107,24 @@ Im Terminal geht alles genauso (`deploy/scenario.sh`, Übersicht mit `./deploy/s
 | Absturz/Codeausführung (CVE-2026-55514/-54234/-22778) | 1.3.4 | Härtung (Feature-Flags, Version) | Prüfpunkte |
 | Interne Schnittstellen nicht erreichbar | 1.3.3 | Härtung | Engine direkt, `/vllm/*`, Header |
 | Kennzeichnung ≥ 200 Tokens (KI-VO Art. 50) | 1.4.4 | Wasserzeichen | `wm_detect_rate`, `wm_fpr`, Opt-out |
+
+### Was kostet das Salting?
+
+`cache_salt` je Mandant (K1, K4) schließt den Prefix-Cache-Seitenkanal. Der Preis: Mandanten können
+gemeinsame Vorlagen (Firmenrichtlinie, Tool-Beschreibungen, RAG-Kontext) nicht mehr aus dem Cache der
+anderen nutzen. Die Plattform misst das an drei Stellen:
+
+| Blick | Test | Was er zeigt |
+|---|---|---|
+| eingeschwungen, 3 Mandanten | Leistungskosten der Isolation | Jeder Mandant hat seine Kopie im Cache – der Unterschied zu K0 ist klein |
+| neuer Mandant (Kaltstart) | Kosten der Cache-Trennung | Ohne Salt kommt die Vorlage aus dem Cache eines anderen Mandanten, mit Salt muss der neue Mandant sie selbst berechnen: TTFT-Aufschlag je neuem Mandanten |
+| viele Mandanten (1, 3, 10, 30) | Kosten der Cache-Trennung | Mit Salt liegt die Vorlage N-mal im KV-Cache (fest 750 MB ≈ 6 500 Tokens). Passt das nicht mehr hinein, fallen die Treffer, TTFT steigt, der Durchsatz sinkt |
+
+In Euro: Die Seite **Konfigurationen** (und der Export) rechnet aus dem Durchsatz die Kosten je 1 Mio.
+Output-Tokens: (Maschine €/h + Leistung kW × Strompreis) / (Durchsatz × 3 600 s × Auslastung). Die
+Annahmen stehen unter **Einstellungen → Kosten** und gelten rückwirkend für alle Läufe; aussagekräftig
+ist vor allem das Δ % zu K0. Für die vielen Mandanten legt `./scenario.sh init` die Teams
+`pool-01` … `pool-30` mit eigenen Keys an (`TENANT_POOL_SIZE` in `deploy/.env`).
 
 ## Aufbau
 
@@ -176,6 +202,7 @@ markiert und aus den bis dahin gespeicherten Anfragen ausgewertet.
 | | Cache-Nutzen | TTFT-Ersparnis bei gemeinsamem System-Prompt und wachsendem Verlauf, Trefferquote |
 | | Kosten je Token-Art | € / 1 Mio. Input-, Output- und Cache-Tokens, Mischpreis je Lastprofil |
 | Sicherheit (Mandantentrennung) | Leistungskosten der Isolation | Mehrmandanten-Last (gemeinsamer + eigener System-Prompt) je Laststufe: TTFT, TPOT, Durchsatz, Cache-Treffer, 429 – Grundlage des Konfigurationsvergleichs |
+| | Kosten der Cache-Trennung (Salting) | Kaltstart: TTFT eines neuen Mandanten bei einer Vorlage, die ein anderer schon berechnet hat; 1–30 Mandanten mit gemeinsamer Vorlage: Cache-Treffer, TTFT, Durchsatz, € je 1 Mio. Tokens |
 | | Prefix-Cache-Seitenkanal (CVE-2025-46570) | Timing- und cached_tokens-Seitenkanal mit getrennten Mandanten-Keys; AUC/Cohens d je Einstellung (cache_salt, Caching, Blockgröße, Last) |
 | | Ressourcenverdrängung / Noisy Neighbor (CVE-2026-34756) | Opfer-Latenz mit/ohne Störnachbar (eigene Keys); Slowdown S_N, Jain-Fairness, Präfix-Verdrängung; n-Grenze |
 | | Härtung & Angriffsfläche | 22–28 Prüfpunkte nach vLLM-Security-Doku (je nach Szenario): Engine direkt erreichbar, `/vllm/*`-Durchreichung, Betriebsendpunkte, n, prompt_embeds, Video/SSRF, Cache-Trennung, Orakel, Header, Gateway-Verwaltung, Version/CVEs |
@@ -297,7 +324,7 @@ realistischen Bereich und der Lastabfall wird sichtbar.
 | Parallelität & Kapazität | Parallelitäts-Test, Kapazitäts-Sweep, Kontextlängen-Matrix | ca. 1 h |
 | Konfiguration | alle Prüfpunkte | ca. 10 min |
 | Dauerlast | Dauerlast, Lastspitze, Überlast | 1–4 h |
-| Konfigurationsvergleich (je Szenario) | Härtung, Prefix-Seitenkanal, Leistungskosten, Wasserzeichen, Ressourcenverdrängung | ca. 15–20 min |
+| Konfigurationsvergleich (je Szenario) | Härtung, Prefix-Seitenkanal, Leistungskosten, Kosten der Cache-Trennung, Wasserzeichen, Ressourcenverdrängung | ca. 17–20 min |
 | Abnahme | alles zusammen, plus Prüfbericht als HTML und PDF in `data/reports/` | mehrere Stunden |
 
 Den Prüfbericht gibt es für jeden Lauf auch über die Knöpfe auf der Ergebnisseite. Das PDF erzeugt

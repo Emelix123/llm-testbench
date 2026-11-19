@@ -75,6 +75,12 @@ cmd_init() {
   else
     echo "deploy/.env existiert – unverändert."
   fi
+  # Geheimnis für die Pool-Mandanten (Test „Kosten der Cache-Trennung“); ältere .env bekommen es nachgetragen
+  if ! grep -qE '^TENANT_POOL_SECRET=.+' .env; then
+    grep -qE '^TENANT_POOL_SIZE=' .env || setenv TENANT_POOL_SIZE 30
+    setenv TENANT_POOL_SECRET "$(rand_b64 32)"
+    echo "TENANT_POOL_SECRET in deploy/.env ergänzt ($(envval TENANT_POOL_SIZE) Pool-Mandanten, ab dem nächsten Szenario-Start)."
+  fi
   # 256 Bit HMAC-Geheimnis für cache_salt (Doku: zufällig, ~256 Bit, keine vorhersagbare ID)
   [[ -f secrets/cache_salt_secret ]] || { rand_b64 32 > secrets/cache_salt_secret; echo "secrets/cache_salt_secret erzeugt."; }
   # 63-Bit-Ganzzahl als Wasserzeichen-Schlüssel (Philox: <= 64 Bit)
@@ -209,7 +215,7 @@ cmd_reset() { docker compose -p "$PROJECT" down --remove-orphans -v 2>/dev/null 
 cmd_profile() {
   need_env
   python3 - "$ROOT/data" <<PY
-import json, os, pathlib, sys
+import base64, hashlib, hmac, json, os, pathlib, sys
 data = pathlib.Path(sys.argv[1]); (data / "profiles").mkdir(parents=True, exist_ok=True)
 env = dict(l.split("=", 1) for l in pathlib.Path(".env").read_text().splitlines() if "=" in l and not l.startswith("#"))
 sec_p = data / "secrets.env"
@@ -220,6 +226,16 @@ if sec_p.exists():
             k, v = l.split("=", 1); sec[k.strip()] = v.strip()
 sec.update({"LOKAL_LITELLM_API_KEY": env["TENANT_A_KEY"], "LOKAL_LITELLM_ANGREIFER_KEY": env["TENANT_B_KEY"],
             "LOKAL_LITELLM_LAST_KEY": env["TENANT_C_KEY"]})
+# Pool-Mandanten pool-01 … pool-NN: gleiche Ableitung wie deploy/litellm/bootstrap_tenants.py
+for k in [k for k in sec if k.startswith("LOKAL_LITELLM_POOL_")]:
+    del sec[k]
+pool = []
+pool_secret = env.get("TENANT_POOL_SECRET", "").strip()
+for i in range(1, int(env.get("TENANT_POOL_SIZE", "0") or 0) + 1 if pool_secret else 1):
+    mac = hmac.new(pool_secret.encode(), f"llmtb-pool-key\x00{i}".encode(), hashlib.sha256).digest()
+    name = f"LOKAL_LITELLM_POOL_{i:02d}"
+    sec[name] = f"sk-pool-{i:02d}-" + base64.urlsafe_b64encode(mac).rstrip(b"=").decode()[:32]
+    pool.append(name)
 sec_p.write_text("# API-Keys. Diese Datei landet nie in runs/ und nie im Export.\n" + "".join(f"{k}={v}\n" for k, v in sorted(sec.items())))
 os.chmod(sec_p, 0o600)
 common = {"model": env.get("SERVED_MODEL_NAME", "llm"), "tokenizer": env.get("MODEL"),
@@ -229,6 +245,7 @@ profiles = {
   "lokal-litellm": {"name": "Lokal (LiteLLM, Mandant A)", "base_url": "http://127.0.0.1:4000",
                     "api_key_name": "LOKAL_LITELLM_API_KEY",
                     "tenant_keys": {"angreifer": "LOKAL_LITELLM_ANGREIFER_KEY", "last": "LOKAL_LITELLM_LAST_KEY"},
+                    "tenant_pool": pool,
                     "notes": "Angelegt von deploy/scenario.sh. Szenario (K0–K6) wird je Lauf aus deploy/.active-scenario.json übernommen."},
   "lokal-vllm-direkt": {"name": "Lokal (vLLM direkt, ohne Gateway)", "base_url": "http://127.0.0.1:8000",
                         "api_key_name": "LOKAL_VLLM_DIREKT_API_KEY",
@@ -240,9 +257,10 @@ for pid, p in profiles.items():
     merged = {**old, **common, **p}
     if pid == "lokal-vllm-direkt":
         merged.pop("tenant_keys", None)
+        merged.pop("tenant_pool", None)
     path.write_text(json.dumps(merged, indent=2, ensure_ascii=False))
     print("Profil", path)
-print("Keys in", sec_p)
+print("Keys in", sec_p, f"(3 Mandanten + {len(pool)} Pool-Mandanten)")
 PY
 }
 

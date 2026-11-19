@@ -18,7 +18,7 @@ import hashlib
 import json
 import random
 import time
-from collections import deque
+from collections import deque, OrderedDict
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -41,6 +41,8 @@ ap.add_argument("--vision", action="store_true", help="Bilder verstehen (VL-Mode
 ap.add_argument("--response-cache", action="store_true", help="LiteLLM-Antwort-Cache simulieren (Fehlkonfiguration)")
 ap.add_argument("--block-size", type=int, default=16, help="Tokens je Cache-Block (vLLM: 16)")
 ap.add_argument("--no-prefix-caching", action="store_true", help="Prefix-Caching ganz abschalten")
+ap.add_argument("--cache-tokens", type=int, default=0,
+                help="Prefix-Cache-Größe in Tokens (LRU, wie der freie KV-Cache von vLLM); 0 = unbegrenzt")
 ap.add_argument("--no-cached-tokens", action="store_true", help="prompt_tokens_details.cached_tokens NICHT liefern")
 ap.add_argument("--max-n", type=int, default=16384, help="Obergrenze fuer n (vLLM VLLM_MAX_N_SEQUENCES-Standard)")
 ap.add_argument("--honor-cache-salt", dest="honor_cache_salt", action="store_true", default=True,
@@ -57,7 +59,7 @@ S = args.speed
 state = {"active": 0, "kv_used": 0}
 cond = asyncio.Condition()
 prefill_lock = asyncio.Lock()
-prefix_cache: dict[str, int] = {}
+prefix_cache: "OrderedDict[str, int]" = OrderedDict()
 recent = deque()
 response_cache: dict = {}
 
@@ -101,9 +103,12 @@ def cached_prefix(text: str, salt: str | None) -> int:
         else:
             break
     for i in range(blk, len(text) + 1, blk):
-        prefix_cache[hashlib.blake2b((seed + text[:i]).encode(), digest_size=8).hexdigest()] = 1
-    if len(prefix_cache) > 2_000_000:
-        prefix_cache.clear()
+        h = hashlib.blake2b((seed + text[:i]).encode(), digest_size=8).hexdigest()
+        prefix_cache[h] = 1
+        prefix_cache.move_to_end(h)   # zuletzt benutzt
+    cap = (args.cache_tokens // max(1, args.block_size)) if args.cache_tokens > 0 else 2_000_000
+    while len(prefix_cache) > cap:
+        prefix_cache.popitem(last=False)   # LRU: ältesten Block verdrängen
     return hit
 
 

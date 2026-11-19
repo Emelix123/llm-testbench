@@ -17,7 +17,7 @@ Gesteuert über Umgebungsvariablen (siehe deploy/compose/*.yaml):
   TENANT_SALT_MODE      off | per_tenant | per_request        (Standard: off)
   TENANT_STRIP_PARAMS   1 = gefährliche Felder entfernen       (Standard: 0)
   TENANT_MAX_N          größtes erlaubtes n, 0 = keine Grenze  (Standard: 0)
-  TENANT_ROUTING        JSON {"mandant-a": "llm-mandant-a", …} (Standard: leer)
+  TENANT_ROUTING        JSON {"mandant-a": "llm-mandant-a", "pool-*": …} (Standard: leer; Muster mit *)
   TENANT_HIDE_INTERNALS 1 = interne Angaben in Antwort-Headern überschreiben (x-litellm-model-api-base
                         verrät sonst die Adresse der Engine, z. B. http://vllm:8000/v1)
   CACHE_SALT_SECRET_FILE  Datei mit dem HMAC-Geheimnis (Docker-Secret)
@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import secrets
+from fnmatch import fnmatchcase
 
 from fastapi import HTTPException
 from litellm.integrations.custom_logger import CustomLogger
@@ -136,7 +137,8 @@ class TenantIsolation(CustomLogger):
             data["extra_body"] = eb
 
         if self.routing:
-            target = self.routing.get(tenant)
+            target = self.routing.get(tenant) or next(
+                (t for pat, t in self.routing.items() if "*" in pat and fnmatchcase(tenant, pat)), None)
             if not target:
                 raise HTTPException(status_code=403, detail="Für diesen Mandanten ist keine Instanz konfiguriert")
             data["model"] = target

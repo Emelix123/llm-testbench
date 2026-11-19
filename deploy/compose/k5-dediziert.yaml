@@ -48,7 +48,7 @@ services:
     command: ["--config", "/app/llmtb/config.dedicated.yaml", "--port", "4000"]
     environment:
       VLLM_API_KEY: "ohne-engine-schluessel"
-      TENANT_ROUTING: '{"mandant-a": "llm-mandant-a", "mandant-b": "llm-mandant-b", "mandant-c": "llm-mandant-b"}'
+      TENANT_ROUTING: '{"mandant-a": "llm-mandant-a", "mandant-b": "llm-mandant-b", "mandant-c": "llm-mandant-b", "pool-*": "llm-mandant-b"}'
     depends_on:
       postgres: { condition: service_healthy }
     networks: [edge, backend]

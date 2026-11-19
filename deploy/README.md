@@ -117,7 +117,8 @@ deploy/
   vllm/start-vllm.sh       baut das vllm-serve-Kommando, protokolliert es (ohne Schlüssel)
   litellm/config*.yaml     Gateway-Konfiguration (geteilt / dediziert)
   litellm/tenant_isolation.py  Mandanten-Hook: cache_salt, Feld-Filter, n-Grenze, Routing
-  litellm/bootstrap_tenants.py legt Teams + Keys mit den Grenzen des Szenarios an
+  litellm/bootstrap_tenants.py legt Teams + Keys mit den Grenzen des Szenarios an (A, B, C und
+                           pool-01 … pool-30 für den Test „Kosten der Cache-Trennung“)
   watermark/detector_server.py Detektor-Dienst (vllm.v1.watermarking, CPU)
 ```
 

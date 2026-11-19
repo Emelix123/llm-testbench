@@ -22,7 +22,7 @@ from typing import Any, Callable
 from . import storage, stats
 from .client import Endpoint, StreamResult, make_client, measure_network_latency, now_ns, simple_get
 from .prompts import get_factory
-from .sysmon import SleepInhibitor, cpu, network_kind
+from .sysmon import SleepInhibitor, cpu, network_kind, power_state
 
 TESTS_DIR = storage.ROOT / "tests"
 
@@ -127,6 +127,14 @@ class RunContext:
             key = storage.get_secret(secret_name)
             if key:
                 self.tenant_eps[role] = Endpoint(profile["base_url"], profile["model"], key)
+        # Weitere Mandanten (pool-01 …) für Tests mit vielen Mandanten, z. B. „Kosten der Cache-Trennung“
+        self.pool_roles: list[str] = []
+        for i, secret_name in enumerate(profile.get("tenant_pool") or [], 1):
+            key = storage.get_secret(secret_name)
+            if key:
+                role = f"pool-{i:02d}"
+                self.tenant_eps[role] = Endpoint(profile["base_url"], profile["model"], key)
+                self.pool_roles.append(role)
         self.timeout_s = float(settings["client"]["request_timeout_s"])
         self.client = make_client(timeout_s=self.timeout_s)
         self.factory = get_factory(profile.get("tokenizer"))
@@ -596,9 +604,15 @@ class Batch:
                        "sleep_inhibit": inhibit_method, "python": sys.version.split()[0]},
             "endpoint_fingerprint": fingerprint,
             "deploy_scenario": storage.active_scenario(self.profile),
-            "tenants": sorted(ctx.tenant_eps),
+            "tenants": sorted(r for r in ctx.tenant_eps if r not in ctx.pool_roles),
+            "tenant_pool": len(ctx.pool_roles),
             "slo": settings["slo"],
         }
+        pw = power_state()
+        cfg["client"]["power"] = pw
+        if pw and pw.get("on_battery"):
+            ctx.note(f"Der Rechner lief auf Akku ({pw.get('capacity')} %): CPU und GPU takten herunter, die Messwerte sind "
+                     "langsamer und nicht mit Messungen am Netzteil vergleichbar. Netzteil anschließen und wiederholen.")
         storage.write_json(rd / "config.json", cfg)
         status = "fertig"
         try:

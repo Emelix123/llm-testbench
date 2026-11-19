@@ -420,6 +420,15 @@ def write_export(g: Gesamtlauf) -> dict:
              + (f", GPU {gpu[0]['name']} ({gpu[0]['total_mb'] / 1024:.1f} GB)" if gpu else "")
              + (f", Modell {active.get('model')}" if active.get("model") else ""),
              "konfigurationsvergleich.csv/.tex: neuester Lauf je Szenario und Test; diese Zusammenfassung: alle Wiederholungen."]
+    if mx.cost_note():
+        notes.append(mx.cost_note() + ".")
+    def on_battery(run_id: str) -> bool:
+        cfg = storage.read_json(storage.RUNS / run_id / "config.json", {}) or {}
+        return bool(((cfg.get("client") or {}).get("power") or {}).get("on_battery"))
+    akku = sum(1 for r in rows if on_battery(r["run_id"]))
+    if akku:
+        notes.insert(0, f"**Achtung: {akku} von {len(rows)} Läufen auf Akku gemessen** – CPU und GPU takten herunter, "
+                        "die Werte sind langsamer. Für die Arbeit am Netzteil wiederholen.")
     files = {
         "zusammenfassung.md": mx.summary_md(rows, f"Konfigurationsvergleich – Gesamtlauf {g.id}", notes),
         "konfigurationsvergleich.tex": mx.to_latex(data),
