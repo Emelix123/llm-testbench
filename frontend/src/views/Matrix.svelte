@@ -84,17 +84,20 @@
   }
   function csv() {
     const { ms, rows } = rowsForExport()
-    const esc = (v) => { const s = v === null || v === undefined ? '' : typeof v === 'number' ? String(v).replace('.', ',') : String(v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
+    const esc = (v) => { const s = v === null || v === undefined ? '' : typeof v === 'boolean' ? (v ? 'ja' : 'nein') : typeof v === 'number' ? String(v).replace('.', ',') : String(v); return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
     return [['Szenario', 'Konfiguration', ...ms.map((m) => m.label + (m.unit ? ` [${m.unit}]` : ''))], ...rows].map((r) => r.map(esc).join(';')).join('\n')
   }
   function latex() {
     const tex = (s) => String(s).replace(/([%&_#$])/g, '\\$1').replace(/×/g, '$\\times$').replace(/≥/g, '$\\geq$').replace(/–/g, '--')
+      .replace(/^-(?=\d)/, '$-$')   // echtes Minuszeichen statt Bindestrich
     const cell = (k, g) => { const m = M(k), v = g.values[k]; return v == null ? '--' : tex(fmt(m, v)) }
-    const dcell = (k, g) => { if (!B || g.key === base) return '--'; const d = delta(M(k), g.values[k], B.values[k]); return d ? tex(dtxt(d)) : '--' }
+    const dcell = (k, g) => { if (!B) return '--'; if (g.key === base) return 'Ref.'; const d = delta(M(k), g.values[k], B.values[k]); return d ? tex(dtxt(d)) : '--' }
     const lines = groups.map((g) => [tex(short(g)), tex(g.scenario_name || g.profile_name), cell('prefix_auc', g), cell('prefix_d', g), cell('slowdown_sn', g),
       cell('jain_index', g), cell('hardening_score', g), cell('wm_detect_rate', g), dcell('output_tps', g), dcell('ttft_p50_ms', g), dcell('tpot_p50_ms', g)].join(' & ') + ' \\\\')
     return ['% Erzeugt von der LLM-Inferenz-Testplattform (Konfigurationsvergleich), ' + new Date().toLocaleString('de-DE'),
-      '% benötigt \\usepackage{booktabs}', '\\begin{table}[htbp]', '\\centering', '\\small',
+      '% benötigt \\usepackage{booktabs}. Passt so auf A4 mit 2,5 cm Rand; sonst die tabular-Umgebung in',
+      '% \\resizebox{\\textwidth}{!}{...} (Paket graphicx) einschließen.',
+      '\\begin{table}[htbp]', '\\centering', '\\footnotesize', '\\setlength{\\tabcolsep}{2.5pt}',
       '\\begin{tabular}{llrrrrrrrrr}', '\\toprule',
       ' & & \\multicolumn{2}{c}{Seitenkanal} & \\multicolumn{2}{c}{Verfügbarkeit} & Härtung & WZ & \\multicolumn{3}{c}{$\\Delta$ zu ' + tex(B ? short(B) : 'Referenz') + '} \\\\',
       '\\cmidrule(lr){3-4}\\cmidrule(lr){5-6}\\cmidrule(lr){9-11}',
@@ -187,9 +190,16 @@
       </table></div>
     {/if}
   {/each}
+
+  <h2>Export-Vorschau</h2>
+  <p class="small muted">Dasselbe wie die Knöpfe oben – zum Markieren und Kopieren, falls die Zwischenablage nicht erlaubt ist.
+    Die LaTeX-Tabelle braucht <code>\usepackage{'{'}booktabs{'}'}</code>.</p>
+  <details class="panel" id="export-latex"><summary>LaTeX (booktabs)</summary><pre class="export">{latex()}</pre></details>
+  <details class="panel" id="export-csv" style="margin-top:.6rem"><summary>CSV (Semikolon, Dezimalkomma – für Excel/LibreOffice)</summary><pre class="export">{csv()}</pre></details>
 {/if}
 
 <style>
+  .export { overflow-x: auto; font-size: .78rem; white-space: pre; margin: .6rem 0 0; }
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; margin-top: .8rem; }
   @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
   .good { color: var(--green); font-weight: 600; }
