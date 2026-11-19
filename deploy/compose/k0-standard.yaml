@@ -1,0 +1,54 @@
+# K0 – Standardkonfiguration (Referenz, verwundbar)
+#
+# Was ein Betreiber ohne besondere Maßnahmen typischerweise aufsetzt: vLLM mit Standardwerten
+# (Prefix-Caching an, geteilter Cache, n bis 16384, keine Engine-Authentifizierung), davor LiteLLM
+# mit einem Virtual Key je Mandant – aber ohne Weitergabe der Mandanten-Identität an die Engine
+# (KeyPooling, Sun u. a. 2026). Die Engine ist zusätzlich direkt erreichbar (127.0.0.1:8000).
+#
+# Erwartung in den Tests:  Prefix-Seitenkanal ROT, Noisy Neighbor ROT, Härtung ROT.
+# Messhilfe: --enable-prompt-tokens-details liefert cached_tokens (in Produktion aus, siehe K4).
+name: llmtb
+
+x-scenario:
+  id: K0
+  name: Standard (verwundbar)
+  massnahmen: []
+
+services:
+  vllm:
+    extends: { file: common.yaml, service: vllm }
+    environment:
+      LLMTB_SCENARIO: K0
+      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details"
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [backend]
+
+  litellm:
+    extends: { file: common.yaml, service: litellm }
+    environment:
+      VLLM_API_KEY: "ohne-engine-schluessel"
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [edge, backend]
+
+  postgres:
+    extends: { file: common.yaml, service: postgres }
+    networks: [backend]
+
+  tenant-setup:
+    extends: { file: common.yaml, service: tenant-setup }
+    environment:
+      LLMTB_SCENARIO: K0
+    networks: [backend]
+
+networks:
+  edge: {}
+  backend: {}
+
+volumes:
+  vllm-cache: {}
+  pgdata: {}
+
+secrets:
+  cache_salt_secret: { file: ../secrets/cache_salt_secret }

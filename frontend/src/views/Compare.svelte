@@ -6,7 +6,23 @@
   let { query } = $props()
   let runs = $state([]), a = $state(query.a || ''), b = $state(query.b || ''), A = $state(null), B = $state(null)
 
-  onMount(async () => { runs = await api.get('/api/runs'); load() })
+  let mdefs = $state([])
+  onMount(async () => { runs = await api.get('/api/runs'); mdefs = await api.get('/api/matrix/metrics').catch(() => []); load() })
+  // Kennzahlen aus summary.matrix (Sicherheits- und Leistungstests) mit Differenz in %
+  const matrixRows = $derived.by(() => {
+    if (!A || !B) return []
+    const ma = A.summary.matrix || {}, mb = B.summary.matrix || {}
+    return mdefs.filter((m) => ma[m.key] != null || mb[m.key] != null).map((m) => {
+      const va = ma[m.key], vb = mb[m.key]
+      let d = null, cls = ''
+      if (typeof va === 'number' && typeof vb === 'number' && va !== 0) {
+        d = ((vb - va) / Math.abs(va)) * 100
+        if (m.better && Math.abs(d) > 2) cls = (m.better === 'lower' ? d < 0 : d > 0) ? 'good' : 'bad'
+      }
+      return { m, va, vb, d, cls }
+    })
+  })
+  const fv = (m, v) => (v == null ? '–' : typeof v === 'boolean' ? (v ? 'ja' : 'nein') : typeof v === 'number' ? num(v, m.digits ?? 2) + (m.unit ? ' ' + m.unit : '') : v)
   const runA = $derived(runs.find((r) => r.id === a))
   const candidatesB = $derived(runs.filter((r) => r.id !== a && (!runA || r.test === runA.test)))
   async function load() {
@@ -14,7 +30,7 @@
     B = b ? await api.get('/api/runs/' + b).catch(() => null) : null
     history.replaceState(null, '', `#/vergleich?a=${a}&b=${b}`)
   }
-  const label = (r) => `${dt(r.started_at)} · ${r.profile_name} · ${r.test_name}`
+  const label = (r) => `${dt(r.started_at)} · ${r.scenario ? r.scenario + ' · ' : ''}${r.profile_name} · ${r.test_name}`
 
   // Diagramme mit gleicher id überlagern: Serien als "A: …" und "B: …"
   const charts = $derived.by(() => {
@@ -74,6 +90,18 @@
     </table></div>
   {/if}
 
+  {#if matrixRows.length}
+    <h2>Kennzahlen Sicherheit & Leistung (B gegenüber A)</h2>
+    <div class="panel tablewrap"><table>
+      <thead><tr><th>Kennzahl</th><th class="num">A {A.config.deploy_scenario?.id || ''}</th><th class="num">B {B.config.deploy_scenario?.id || ''}</th><th class="num">Δ %</th></tr></thead>
+      <tbody>{#each matrixRows as r}
+        <tr><td>{r.m.label}</td><td class="num">{fv(r.m, r.va)}</td><td class="num">{fv(r.m, r.vb)}</td>
+          <td class="num {r.cls}">{r.d == null ? '' : (r.d > 0 ? '+' : '') + num(r.d, 1) + ' %'}</td></tr>
+      {/each}</tbody>
+    </table></div>
+    <p class="small muted">Mehr als zwei Konfigurationen auf einmal: Seite <a href="#/konfigurationen">Konfigurationen</a>.</p>
+  {/if}
+
   {#if scores.length}
     <h2>Punktzahlen</h2>
     <div class="panel tablewrap"><table>
@@ -109,6 +137,8 @@
 {/if}
 
 <style>
+  .good { color: var(--green); font-weight: 600; }
+  .bad { color: var(--red); font-weight: 600; }
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; margin-top: .8rem; }
   @media (max-width: 800px) { .cols { grid-template-columns: 1fr; } }
 </style>

@@ -2,8 +2,10 @@
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   let profiles = $state([]), form = $state(null), error = $state(''), checks = $state({}), busy = $state({})
-  const empty = () => ({ name: '', base_url: 'http://localhost:4000', model: '', tokenizer: '', api_key: '', api_key_name: '', max_context: 32768, capabilities: {} })
-  function edit(p) { form = { ...p, api_key: '', capabilities: { ...(p.capabilities || {}) } } }
+  const empty = () => ({ name: '', base_url: 'http://localhost:4000', model: '', tokenizer: '', api_key: '', api_key_name: '', max_context: 32768, capabilities: {},
+    tenant_key_values: { angreifer: '', last: '' }, engine_url: '', watermark_detector_url: '' })
+  function edit(p) { form = { ...p, api_key: '', capabilities: { ...(p.capabilities || {}) }, tenant_key_values: { angreifer: '', last: '' } } }
+  const tk = (p, r) => (p.tenant_keys?.[r] ? (p.tenant_has_key?.[r] ? 'hinterlegt' : 'fehlt') : null)
   async function load() { profiles = await api.get('/api/profiles') }
   onMount(load)
   async function save() {
@@ -31,6 +33,17 @@
       <label class="field"><span>Max. Kontext (Tokens)</span><input type="number" bind:value={form.max_context} /></label>
       <label class="field"><span>API-Key {form.id ? '(leer = unverändert)' : ''}</span><input type="password" bind:value={form.api_key} autocomplete="off" /></label>
     </div>
+    <details class="small" open={!!(form.tenant_keys || form.engine_url)}>
+      <summary><b>Sicherheitstests (Mandantentrennung)</b> – weitere Mandanten-Keys, Engine- und Detektor-URL</summary>
+      <p class="muted">Der API-Key oben gehört zu Mandant A (Opfer). Mit eigenen Keys für Mandant B (Angreifer) und C (Last) prüfen
+        die Sicherheitstests, ob das Gateway die Mandanten trennt. <code>deploy/scenario.sh profile</code> trägt das automatisch ein.</p>
+      <div class="grid2">
+        <label class="field"><span>API-Key Mandant B – Angreifer {form.tenant_keys?.angreifer ? '(leer = unverändert)' : ''}</span><input type="password" bind:value={form.tenant_key_values.angreifer} autocomplete="off" /></label>
+        <label class="field"><span>API-Key Mandant C – Last {form.tenant_keys?.last ? '(leer = unverändert)' : ''}</span><input type="password" bind:value={form.tenant_key_values.last} autocomplete="off" /></label>
+        <label class="field"><span>Direkte Engine-URL (sollte NICHT erreichbar sein)</span><input bind:value={form.engine_url} placeholder="http://127.0.0.1:8000" /></label>
+        <label class="field"><span>Wasserzeichen-Detektor (nur Betreiber)</span><input bind:value={form.watermark_detector_url} placeholder="http://127.0.0.1:8090" /></label>
+      </div>
+    </details>
     <div class="row">
       <label class="row"><input type="checkbox" bind:checked={form.capabilities.vision} /> Vision-Modell (Bilder)</label>
       <label class="row"><input type="checkbox" bind:checked={form.capabilities.reasoning} /> Reasoning-Modell (Denk-Teil)</label>
@@ -46,7 +59,7 @@
     <div class="row">
       <div class="grow">
         <h3>{p.name}</h3>
-        <div class="small muted">{p.base_url} · {p.model} · Tokenizer: {p.tokenizer || '– (Schätzung)'} · max. {p.max_context ?? '?'} Tokens{p.capabilities?.vision ? ' · Vision' : ''}{p.capabilities?.reasoning ? ' · Reasoning' : ''} · Key: {p.has_key ? 'hinterlegt' : 'fehlt'}</div>
+        <div class="small muted">{p.base_url} · {p.model} · Tokenizer: {p.tokenizer || '– (Schätzung)'} · max. {p.max_context ?? '?'} Tokens{p.capabilities?.vision ? ' · Vision' : ''}{p.capabilities?.reasoning ? ' · Reasoning' : ''} · Key: {p.has_key ? 'hinterlegt' : 'fehlt'}{tk(p, 'angreifer') ? ` · Mandant B: ${tk(p, 'angreifer')}` : ''}{tk(p, 'last') ? ` · Mandant C: ${tk(p, 'last')}` : ''}</div>
       </div>
       <button onclick={() => check(p)} disabled={busy[p.id]}>{busy[p.id] ? 'Prüfe …' : 'Verbindung prüfen'}</button>
       <button onclick={() => edit(p)}>Bearbeiten</button>

@@ -47,6 +47,9 @@ ap.add_argument("--honor-cache-salt", dest="honor_cache_salt", action="store_tru
                 help="cache_salt aus dem Request in den Block-Hash einfließen lassen (vLLM >= 0.9, Standard)")
 ap.add_argument("--ignore-cache-salt", dest="honor_cache_salt", action="store_false",
                 help="cache_salt ignorieren (altes vLLM / Gateway reicht ihn nicht durch)")
+ap.add_argument("--salt-per-key", action="store_true",
+                help="Gateway-Hook nachbilden: cache_salt aus dem API-Key ableiten, Client-Salt ignorieren "
+                     "(wie deploy/litellm/tenant_isolation.py, Szenario K1)")
 args, _ = ap.parse_known_args()
 
 app = FastAPI()
@@ -343,7 +346,10 @@ async def chat(req: Request):
     include_usage = (body.get("stream_options") or {}).get("include_usage", False)
     want_lp = bool(body.get("logprobs"))
     cache_key = hashlib.blake2b(json.dumps(body, sort_keys=True).encode(), digest_size=8).hexdigest()
-    cached = cached_prefix(text, body.get("cache_salt"))
+    salt = body.get("cache_salt")
+    if args.salt_per_key:  # Mandant = API-Key; der Client kann den Salt nicht wählen
+        salt = hashlib.sha256((req.headers.get("authorization") or "anonym").encode()).hexdigest()
+    cached = cached_prefix(text, salt)
     rid = f"chatcmpl-{random.getrandbits(48):x}"
 
     def chunk_of(delta, fin=None):

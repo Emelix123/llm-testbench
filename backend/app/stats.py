@@ -355,3 +355,25 @@ def bootstrap_auc_ci(pos: list[float], neg: list[float], level: float = 95.0,
     lo = pct(aucs, (100 - level) / 2)
     hi = pct(aucs, 100 - (100 - level) / 2)
     return (round(lo, 3), round(hi, 3))
+
+
+def jain_index(values: list[float]) -> float | None:
+    """Jain-Fairness-Index J = (Σx)² / (n·Σx²) (Jain, Chiu, Hawe 1984).
+
+    1 = alle erhalten gleich viel, 1/n = einer erhält alles. Für Mandanten wird x als
+    normierte Leistung (Leistung unter Konkurrenz / Leistung allein) übergeben, damit
+    unterschiedlich große Nachfrage nicht als Unfairness zählt.
+    """
+    v = [float(x) for x in values if x is not None and x >= 0]
+    if not v:
+        return None
+    sq = sum(x * x for x in v)
+    if sq == 0:
+        return None
+    return (sum(v) ** 2) / (len(v) * sq)
+
+
+def service_tokens(recs: list[dict]) -> float:
+    """Bediente Arbeit in gewichteten Tokens (Input + 2·Output, wie der VTC-Scheduler, Sheng u. a. 2024)."""
+    return float(sum((r.get("prompt_tokens") or 0) + 2 * (r.get("completion_tokens") or 0)
+                     for r in recs if is_ok(r)))

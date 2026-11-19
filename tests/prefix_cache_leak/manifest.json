@@ -3,7 +3,7 @@
   "order": 400,
   "name": "Prefix-Cache-Seitenkanal (CVE-2025-46570)",
   "category": "Sicherheit (Mandantentrennung)",
-  "description": "Stellt den Prefix-Caching-Seitenkanal nach: Ein Opfer sendet einen Präfix, der Angreifer misst an der Antwortzeit (TTFT) und an prompt_tokens_details.cached_tokens, ob derselbe Präfix bereits im geteilten Cache liegt. Je Einstellung (cache_salt, Prefix-Caching, Blockgröße, Last) wird gemessen, ob der Angriff funktioniert. Maße: AUC (0,5 = Raten, 1,0 = perfekt unterscheidbar, wie im CVE) und Cohens d. ACHTUNG: Nur gegen eigene Systeme mit Erlaubnis. Rot = verwundbar.",
+  "description": "Stellt den Prefix-Caching-Seitenkanal nach: Ein Opfer sendet einen Präfix, der Angreifer misst an der Antwortzeit (TTFT) und an prompt_tokens_details.cached_tokens, ob derselbe Präfix bereits im geteilten Cache liegt. Opfer und Angreifer senden mit getrennten Mandanten-Keys (prüft, ob das Gateway die Mandanten-Identität bis zum Cache weitergibt – KeyPooling). Je Einstellung (cache_salt, Prefix-Caching, Blockgröße, Last) wird gemessen, ob der Angriff funktioniert. Maße: AUC (0,5 = Raten, 1,0 = perfekt unterscheidbar, wie im CVE) und Cohens d. ACHTUNG: Nur gegen eigene Systeme mit Erlaubnis. Rot = verwundbar.",
   "estimated_duration_s": 300,
   "params": [
     {
@@ -19,14 +19,30 @@
       "default": 512
     },
     {
+      "key": "tenant_mode",
+      "label": "Mandanten",
+      "type": "select",
+      "default": "keys",
+      "options": [
+        {
+          "value": "keys",
+          "label": "getrennte API-Keys (Opfer/Angreifer/Last aus dem Profil) – prüft die Trennung im Gateway"
+        },
+        {
+          "value": "single",
+          "label": "ein Key für alle (Mandanten nur über cache_salt simuliert)"
+        }
+      ]
+    },
+    {
       "key": "salt_mode",
-      "label": "cache_salt",
+      "label": "cache_salt vom Client",
       "type": "select",
       "default": "none",
       "options": [
         {
           "value": "none",
-          "label": "keiner (Standard-vLLM: geteilter Cache – angreifbar)"
+          "label": "keiner (Client setzt keinen Salt – Trennung muss das Gateway leisten)"
         },
         {
           "value": "per_tenant",
@@ -58,17 +74,18 @@
     },
     {
       "key": "sweep_tokens",
-      "label": "Sweep: übereinstimmende Präfix-Längen (Tokens)",
+      "label": "Sweep: übereinstimmende Präfix-Längen (Tokens; vLLM-Paper: Block 16, vLLM 0.34: Standard 64)",
       "type": "int_list",
       "default": [
         0,
         8,
         16,
         32,
+        48,
         64,
+        96,
         128,
-        256,
-        512
+        256
       ]
     },
     {
@@ -156,7 +173,7 @@
       },
       {
         "name": "--block-size",
-        "wirkung": "Tokens je KV-Block (z. B. 16); bestimmt die Granularität von Cache-Treffern."
+        "wirkung": "Tokens je KV-Block; bestimmt die Granularität von Cache-Treffern. Standard in vLLM 0.34: 64 (CacheConfig.DEFAULT_BLOCK_SIZE), im vLLM-Paper 2023: 16. Größer = Angreifer muss mehr Tokens am Stück raten."
       },
       {
         "name": "--enable-prompt-tokens-details",
@@ -168,6 +185,10 @@
       }
     ],
     "litellm": [
+      {
+        "name": "Virtual Key je Mandant (Team)",
+        "wirkung": "Ohne Hook teilen sich alle Keys denselben Cache (KeyPooling, Sun u. a. 2026). Erst der Hook macht aus dem Team einen cache_salt."
+      },
       {
         "name": "async_pre_call_hook",
         "wirkung": "Setzt cache_salt je Mandant – die eigentliche Gegenmaßnahme im Gateway."

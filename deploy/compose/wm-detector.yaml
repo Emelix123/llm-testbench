@@ -1,0 +1,11 @@
+# Wasserzeichen-Detektor allein starten (z. B. um in K0 die Fehlalarmrate auf Modelltexten zu messen).
+#   ./scenario.sh detector up | down
+# In K4 und K6 läuft er bereits mit (gleicher Port) – dann nicht zusätzlich starten.
+name: llmtb-wm
+
+services:
+  wm-detector:
+    extends: { file: common.yaml, service: wm-detector }
+
+secrets:
+  watermark_key: { file: ../secrets/watermark_key }

@@ -1,0 +1,50 @@
+{
+  "id": "hardening_check",
+  "order": 420,
+  "name": "Härtung & Angriffsfläche (vLLM-Security-Doku)",
+  "category": "Sicherheit (Mandantentrennung)",
+  "description": "Prüft von außen – mit dem Key eines Mandanten – die Punkte der vLLM-Security-Doku und der Arbeit: Authentifizierung, erreichbare Betriebsendpunkte der Engine (direkt und über die /vllm/*-Durchreichung von LiteLLM), n-Grenze, prompt_embeds (CVE-2026-55514), Multimodal-/Video-Eingaben und SSRF (CVE-2026-22778), Mandantentrennung des Caches, cached_tokens-Orakel, interne Adressen in Antwort-Headern, Verwaltungsendpunkte des Gateways und die Engine-Version gegen bekannte CVEs. Betriebsendpunkte werden nur mit GET angefragt (nie /pause, /sleep … ausgelöst). Nur gegen eigene Systeme mit Erlaubnis. Rot = mindestens ein kritischer Befund.",
+  "estimated_duration_s": 60,
+  "params": [
+    {"key": "engine_url", "label": "Direkte Engine-URL (leer = aus dem Profil; z. B. http://127.0.0.1:8000) – sollte vom Client aus NICHT erreichbar sein", "type": "string", "default": ""},
+    {"key": "n_probe", "label": "n-Probe (Doku-Empfehlung: über 128 ablehnen)", "type": "int", "default": 129},
+    {"key": "check_cache_isolation", "label": "Cache-Trennung zwischen zwei Mandanten-Keys prüfen (braucht cached_tokens)", "type": "bool", "default": true},
+    {"key": "check_admin_routes", "label": "Verwaltungsendpunkte des Gateways mit Mandanten-Key prüfen", "type": "bool", "default": true}
+  ],
+  "explain": {
+    "kurz": "vLLM kennt keine Mandanten und schützt nur /v1 & Co. per API-Key. Alles andere – Betriebsendpunkte, Metriken, Feature-Flags – muss die Plattform abschirmen. Der Test schaut von außen nach, was ein Mandant erreicht.",
+    "cve": "vLLM Security Docs · CVE-2026-55514 · CVE-2026-22778 · CVE-2026-34756 · CVE-2025-46570",
+    "ablauf": [
+      {"rolle": "angreifer", "text": "Ein regulärer Mandant (Angreifertyp A1) nutzt seinen API-Key und probiert Pfade und Parameter, die laut vLLM-Doku nicht öffentlich sein sollen."},
+      {"rolle": "system", "text": "Betriebsendpunkte (/metrics, /version, /tokenize, /pause, /collective_rpc …) haben in vLLM keine Authentifizierung – sie dürfen nur intern erreichbar sein."},
+      {"rolle": "angreifer", "text": "Über LiteLLMs /vllm/*-Durchreichung erreicht ein Mandant ggf. dieselben Endpunkte durch das Gateway hindurch, z. B. /metrics mit prefix_cache_hits_total – ein Cache-Orakel ohne Zeitmessung."},
+      {"rolle": "angreifer", "text": "Gefährliche Funktionen (prompt_embeds, Video-URLs, riesiges n) werden mit harmlosen Proben auf Annahme geprüft – kein Exploit."}
+    ],
+    "signal": "HTTP-Status und Fehlermeldungen der Proben, usage.prompt_tokens_details, Antwort-Header.",
+    "mass": "Zahl bestandener Prüfpunkte; rot = kritisch (Mandant erreicht Engine-Interna oder fremde Cache-Inhalte), gelb = Hinweis.",
+    "verwundbar": "ROT: Engine direkt erreichbar, /vllm/* liefert Engine-Daten, Cache wird zwischen Mandanten geteilt, prompt_embeds/Video angenommen, Version mit bekannter CVE.",
+    "geloest": "GRÜN: Engine nur intern, Routen-Allowlist je Key, cache_salt je Mandant, Feature-Flags aus, n begrenzt, keine internen Adressen in Headern.",
+    "quellen": [
+      {"ref": "vLLM Security Docs (v0.34)", "text": "Endpunkte, die nicht öffentlich sein sollen; cache_salt je Mandant; VLLM_MAX_N_SEQUENCES 64–128; Medien-Allowlist.", "url": "https://docs.vllm.ai/en/stable/usage/security/"},
+      {"ref": "CVE-2026-55514", "text": "Absturz der Engine über prompt_embeds bei M-RoPE-Modellen; behoben ab 0.24.0."},
+      {"ref": "CVE-2026-22778", "text": "RCE über präparierte Video-URL (0.8.3–0.14.0), CVSS 9,8."},
+      {"ref": "LiteLLM vLLM-Pass-through", "text": "/vllm/{endpoint} reicht an die Engine durch, sobald VLLM_API_BASE gesetzt ist – für jeden gültigen Key.", "url": "https://docs.litellm.ai/docs/pass_through/vllm"}
+    ]
+  },
+  "settings": {
+    "vllm": [
+      {"name": "Netz: Engine nur intern (kein Port nach außen)", "wirkung": "--api-key schützt nur /v1, /v2, /inference, /cohere – der Rest ist offen."},
+      {"name": "--disable-prompt-embeds (Standard)", "wirkung": "prompt_embeds nur für vertrauenswürdige Nutzer (CVE-2026-55514)."},
+      {"name": "--language-model-only / --limit-mm-per-prompt", "wirkung": "Keine Medien-Eingaben = keine Video-/Bild-Angriffsfläche."},
+      {"name": "--allowed-media-domains, VLLM_MEDIA_URL_ALLOW_REDIRECTS=0", "wirkung": "SSRF verhindern, falls Medien nötig sind."},
+      {"name": "VLLM_MAX_N_SEQUENCES=64", "wirkung": "Globale n-Grenze (Standard 16384)."},
+      {"name": "--disable-prompt-tokens-details (Standard)", "wirkung": "Kein cached_tokens-Orakel nach außen."},
+      {"name": "VLLM_SERVER_DEV_MODE nie setzen", "wirkung": "Sonst /collective_rpc, /reset_prefix_cache, /sleep …"}
+    ],
+    "litellm": [
+      {"name": "Key: allowed_routes", "wirkung": "Nur Chat/Completions/Models – sperrt /vllm/* und Verwaltungsrouten."},
+      {"name": "VLLM_API_BASE nicht setzen", "wirkung": "Schaltet die /vllm/*-Durchreichung erst frei."},
+      {"name": "Mandanten-Hook", "wirkung": "cache_salt je Mandant, gefährliche Felder entfernen, n begrenzen."}
+    ]
+  }
+}

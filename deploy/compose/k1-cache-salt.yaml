@@ -1,0 +1,55 @@
+# K1 – cache_salt je Mandant im Gateway (Gegenmaßnahme Prefix-Cache-Seitenkanal, CVE-2025-46570)
+#
+# = K0 + genau eine Maßnahme: Der LiteLLM-Hook leitet aus dem Team der Virtual Key einen geheimen
+# Salt ab (HMAC-SHA256, 256 Bit, base64url) und setzt ihn in jede Anfrage. Nur Anfragen desselben
+# Mandanten teilen Präfix-Blöcke; innerhalb eines Mandanten bleibt der Cache-Nutzen erhalten.
+# Vom Client gesendete cache_salt-Werte werden verworfen.
+#
+# Erwartung: Prefix-Seitenkanal GRÜN (AUC-KI schließt 0,5 ein), Leistung ≈ K0 bei Last ohne
+# mandantenübergreifend gleiche Präfixe; Verlust nur dort, wo Mandanten denselben Präfix teilen.
+name: llmtb
+
+x-scenario:
+  id: K1
+  name: cache_salt je Mandant
+  massnahmen: [cache_salt]
+
+services:
+  vllm:
+    extends: { file: common.yaml, service: vllm }
+    environment:
+      LLMTB_SCENARIO: K1
+      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details"
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [backend]
+
+  litellm:
+    extends: { file: common.yaml, service: litellm }
+    environment:
+      VLLM_API_KEY: "ohne-engine-schluessel"
+      TENANT_SALT_MODE: per_tenant
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [edge, backend]
+
+  postgres:
+    extends: { file: common.yaml, service: postgres }
+    networks: [backend]
+
+  tenant-setup:
+    extends: { file: common.yaml, service: tenant-setup }
+    environment:
+      LLMTB_SCENARIO: K1
+    networks: [backend]
+
+networks:
+  edge: {}
+  backend: {}
+
+volumes:
+  vllm-cache: {}
+  pgdata: {}
+
+secrets:
+  cache_salt_secret: { file: ../secrets/cache_salt_secret }

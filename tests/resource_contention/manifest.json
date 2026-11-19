@@ -31,6 +31,22 @@
       ]
     },
     {
+      "key": "tenant_mode",
+      "label": "Mandanten",
+      "type": "select",
+      "default": "keys",
+      "options": [
+        {
+          "value": "keys",
+          "label": "getrennte API-Keys (Opfer = Haupt-Key, Störnachbar = Angreifer-Key)"
+        },
+        {
+          "value": "single",
+          "label": "ein Key für beide (Grenzen je Key treffen dann auch das Opfer!)"
+        }
+      ]
+    },
+    {
       "key": "attack_concurrency",
       "label": "Störnachbar: parallele Anfragen",
       "type": "int",
@@ -91,6 +107,24 @@
       "default": 2000
     },
     {
+      "key": "attacker_alone_s",
+      "label": "Dauer Störnachbar allein (s) – Bezug für die Fairness",
+      "type": "int",
+      "default": 20
+    },
+    {
+      "key": "n_ladder",
+      "label": "n-Grenze: geprüfte Werte (17 → Gateway 16, 65 → VLLM_MAX_N_SEQUENCES 64, 129 → Empfehlung 128)",
+      "type": "int_list",
+      "default": [
+        2,
+        17,
+        65,
+        129,
+        1024
+      ]
+    },
+    {
       "key": "seed",
       "label": "Seed (leer = zufällig)",
       "type": "int",
@@ -123,7 +157,7 @@
       }
     ],
     "signal": "Gemessen: TTFT, TPOT, Goodput und Fehler des Opfers – ohne und mit Störnachbar.",
-    "mass": "Slowdown-Faktor S_N = Latenz des Opfers mit Angriff / ohne Angriff. 1 = keine Beeinträchtigung, höher = stärker verdrängt.",
+    "mass": "Slowdown-Faktor S_N = Latenz des Opfers mit Angriff / ohne Angriff (1 = keine Beeinträchtigung). Jain-Index J über die normierte Leistung beider Mandanten (Leistung unter Konkurrenz / Leistung allein): 1 = beide verlieren gleich viel (fair), 0,5 = einer trägt den gesamten Verlust.",
     "verwundbar": "ROT: Opfer-Latenz steigt stark (hoher Slowdown), Goodput bricht ein oder Anfragen werden unterbrochen. n wird nicht wirksam begrenzt.",
     "geloest": "GRÜN: Geringer Slowdown trotz Angriff – eine Ratenbegrenzung je Mandant im Gateway (LiteLLM) begrenzt die Last, oder getrennte Instanzen trennen den Speicher.",
     "quellen": [

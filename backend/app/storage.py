@@ -22,7 +22,9 @@ SECRETS = DATA / "secrets.env"
 SETTINGS = DATA / "settings.json"
 TOKENIZER_CACHE = DATA / "tokenizers"
 
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.1.0"
+# Von deploy/scenario.sh geschrieben: welches Szenario (K0–K6) lokal gerade läuft.
+SCENARIO_FILE = Path(os.environ.get("LLMTB_SCENARIO_FILE", ROOT / "deploy" / ".active-scenario.json"))
 
 for d in (DATA, PROFILES, SUITES, RUNS, TOKENIZER_CACHE):
     d.mkdir(parents=True, exist_ok=True)
@@ -143,8 +145,31 @@ def list_profiles() -> list[dict]:
         prof = read_json(p, {})
         prof["id"] = p.stem
         prof["has_key"] = bool(get_secret(prof.get("api_key_name")))
+        prof["tenant_has_key"] = {r: bool(get_secret(n)) for r, n in (prof.get("tenant_keys") or {}).items()}
         out.append(prof)
     return out
+
+
+def _is_local(url: str) -> bool:
+    from urllib.parse import urlparse
+    host = (urlparse(url or "").hostname or "").lower()
+    return host in ("localhost", "127.0.0.1", "::1", "0.0.0.0") or host.endswith(".localhost")
+
+
+def active_scenario(profile: dict | None = None) -> dict | None:
+    """Szenario (K0–K6), das laut deploy/.active-scenario.json gerade lokal läuft.
+
+    Nur für lokale Endpunkte – ein entfernter Server hat mit dem lokalen Szenario nichts zu tun.
+    Ein im Profil fest eingetragenes Szenario (Feld "scenario") hat Vorrang.
+    """
+    if profile and profile.get("scenario"):
+        return {"id": str(profile["scenario"]), "name": str(profile["scenario"]), "source": "profil"}
+    if profile is not None and not _is_local(profile.get("base_url", "")):
+        return None
+    sc = read_json(SCENARIO_FILE, None)
+    if not isinstance(sc, dict) or not sc.get("id"):
+        return None
+    return {**sc, "source": "deploy/.active-scenario.json"}
 
 
 def get_profile(pid: str) -> dict | None:
@@ -157,7 +182,11 @@ def get_profile(pid: str) -> dict | None:
 
 
 PROFILE_FIELDS = ("name", "base_url", "model", "tokenizer", "api_key_name",
-                  "max_context", "capabilities", "notes")
+                  "max_context", "capabilities", "notes",
+                  # Sicherheitstests: weitere Mandanten-Keys {"angreifer": SECRET_NAME, "last": SECRET_NAME},
+                  # direkte Engine-URL (Härtungstest) und Wasserzeichen-Detektor
+                  "tenant_keys", "engine_url", "watermark_detector_url", "scenario")
+TENANT_ROLES = ("angreifer", "last")
 
 
 def save_profile(data: dict) -> dict:
@@ -167,6 +196,14 @@ def save_profile(data: dict) -> dict:
     prof["base_url"] = normalize_base_url(prof.get("base_url") or "")
     if not prof.get("api_key_name"):
         prof["api_key_name"] = (pid.upper().replace("-", "_") + "_API_KEY")
+    tk = {r: n for r, n in (prof.get("tenant_keys") or {}).items() if r in TENANT_ROLES and n}
+    for role in TENANT_ROLES:
+        if (data.get("tenant_key_values") or {}).get(role) and role not in tk:
+            tk[role] = pid.upper().replace("-", "_") + f"_{role.upper()}_KEY"
+    if tk:
+        prof["tenant_keys"] = tk
+    else:
+        prof.pop("tenant_keys", None)
     existing = get_profile(pid) or {}
     if "capabilities" not in prof and existing.get("capabilities"):
         prof["capabilities"] = existing["capabilities"]
@@ -210,6 +247,8 @@ def list_runs() -> list[dict]:
             "status": cfg.get("status"),
             "verdict": summ.get("verdict"),
             "headline": summ.get("headline"),
+            "scenario": (cfg.get("deploy_scenario") or {}).get("id"),
+            "scenario_name": (cfg.get("deploy_scenario") or {}).get("name"),
         })
     return out
 

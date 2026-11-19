@@ -78,6 +78,13 @@ def _salts(ctx, trial: int):
     return f"opfer-{trial}-{ctx.rng.getrandbits(32):x}", f"ang-{trial}-{ctx.rng.getrandbits(32):x}"
 
 
+def _roles(ctx) -> tuple[str, str, str]:
+    """(Opfer, Angreifer, Last) – mit getrennten Keys, falls das Profil sie hat."""
+    if ctx.params.get("tenant_mode", "keys") == "keys" and ctx.has_tenant("angreifer"):
+        return "opfer", "angreifer", ("last" if ctx.has_tenant("last") else "opfer")
+    return "opfer", "opfer", "opfer"
+
+
 def _body(ctx, text: str, salt: str | None):
     body = ctx.chat_body(text, ctx.params["probe_tokens"], force=False)
     field = (ctx.params.get("salt_field") or "").strip()
@@ -87,7 +94,7 @@ def _body(ctx, text: str, salt: str | None):
 
 
 def estimate(params):
-    main = params["trials"] * 3 * (1 + (1 if params["background_load"] else 0))
+    main = params["trials"] * 4 * (1 + (1 if params["background_load"] else 0))
     sweep = len(params["sweep_tokens"]) * params["sweep_trials"] * 2 if params["granularity_sweep"] else 0
     return 40 + (main + sweep) * 0.25
 
@@ -97,21 +104,29 @@ def estimate(params):
 async def _measure_pair(ctx, trial: int, phase: str):
     """Eine Treffer- und eine Fehlschlag-Messung mit frischem Präfix."""
     vs, as_ = _salts(ctx, trial)
+    tv, ta, _ = _roles(ctx)
     rng = random.Random(ctx.rng.getrandbits(64))
     P_text, P_words = _blocktext(ctx, rng, ctx.params["prefix_tokens"])
     sfx = " " + " ".join(_words(rng, 6)) + f" {rng.getrandbits(32):x}"
     # frischer Präfix fürs Fehlschlag-Szenario
     M_text, _ = _blocktext(ctx, rng, ctx.params["prefix_tokens"])
     msfx = " " + " ".join(_words(rng, 6)) + f" {rng.getrandbits(32):x}"
+    # Kontrollbedingung: Auch vor dem Fehlschlag sendet das Opfer (einen ANDEREN Präfix Q). So haben
+    # beide Bedingungen dieselbe Vorgeschichte (Opfer-Anfrage direkt davor); der einzige Unterschied
+    # ist der geteilte Präfix. Ohne das misst man Nebeneffekte der Opfer-Anfrage (Gateway-Logging,
+    # Speicherfreigabe) als „Signal“ – AUC deutlich ≠ 0,5 trotz cached_tokens = 0.
+    Q_text, _ = _blocktext(ctx, rng, ctx.params["prefix_tokens"])
 
     async def hit():
-        await ctx.send(_body(ctx, P_text, vs), {"stage": "victim", "phase": phase, "trial": trial})
+        await ctx.send(_body(ctx, P_text, vs), {"stage": "victim", "phase": phase, "trial": trial}, tenant=tv)
         return await ctx.send(_body(ctx, P_text + sfx, as_),
-                              {"stage": "main", "phase": phase, "cond": "hit", "trial": trial})
+                              {"stage": "main", "phase": phase, "cond": "hit", "trial": trial}, tenant=ta)
 
     async def miss():
+        await ctx.send(_body(ctx, Q_text, vs), {"stage": "victim", "phase": phase, "trial": trial, "cond": "control"},
+                       tenant=tv)
         return await ctx.send(_body(ctx, M_text + msfx, as_),
-                              {"stage": "main", "phase": phase, "cond": "miss", "trial": trial})
+                              {"stage": "main", "phase": phase, "cond": "miss", "trial": trial}, tenant=ta)
 
     # Reihenfolge abwechseln, um langsame Drift auszugleichen
     if trial % 2 == 0:
@@ -128,7 +143,7 @@ async def _background(ctx, concurrency: int, stop: asyncio.Event):
             text, _ = _blocktext(ctx, wr, max(256, ctx.params["prefix_tokens"]))
             bsalt = None if ctx.params["salt_mode"] == "none" else f"last-{i}"
             await ctx.send(_body(ctx, text + f" {wr.getrandbits(48):x}", bsalt),
-                           {"stage": "bg"})
+                           {"stage": "bg"}, tenant=_roles(ctx)[2])
     await asyncio.gather(*(worker(i) for i in range(concurrency)))
 
 
@@ -142,10 +157,11 @@ async def _sweep(ctx):
             if ctx.cancelled:
                 return
             vs, as_ = _salts(ctx, done)
+            tv, ta, _ = _roles(ctx)
             rng = random.Random(ctx.rng.getrandbits(64))
             P_text, P_words = _blocktext(ctx, rng, ctx.params["prefix_tokens"])
             # Opfer legt den vollen Präfix in den Cache
-            await ctx.send(_body(ctx, P_text, vs), {"stage": "victim_sweep", "match": m})
+            await ctx.send(_body(ctx, P_text, vs), {"stage": "victim_sweep", "match": m}, tenant=tv)
             # Angreifer übernimmt die ersten m Tokens von P (wortweise genähert) + frischer Rest
             shared = []
             for w in P_words:
@@ -155,17 +171,24 @@ async def _sweep(ctx):
             probe_text, _ = _blocktext(ctx, rng, ctx.params["prefix_tokens"], lead=shared)
             probe_text += f" {rng.getrandbits(32):x}"
             await ctx.send(_body(ctx, probe_text, as_),
-                           {"stage": "sweep", "match": m, "match_tokens": ctx.factory.count(" ".join(shared))})
+                           {"stage": "sweep", "match": m, "match_tokens": ctx.factory.count(" ".join(shared))},
+                           tenant=ta)
             done += 1
             ctx.progress(0.5 + 0.5 * done / n, f"Sweep: {m} Tokens Übereinstimmung ({done}/{n})")
 
 
 async def run(ctx):
     p = ctx.params
+    tv, ta, tb = _roles(ctx)
+    separate = ta != tv
     ctx.extra_config["attack"] = {
         "salt_mode": p["salt_mode"], "salt_field": p.get("salt_field"),
         "prefix_tokens": p["prefix_tokens"], "background_load": p["background_load"],
+        "tenant_mode": "keys" if separate else "single", "roles": {"opfer": tv, "angreifer": ta, "last": tb},
     }
+    if p.get("tenant_mode", "keys") == "keys" and not separate:
+        ctx.note("Das Profil hat keinen Angreifer-Key – Opfer und Angreifer senden mit demselben Key. "
+                 "Die Trennung im Gateway wird so NICHT geprüft (Profil um Mandanten-Keys ergänzen).")
     ctx.note("Prefix-Cache-Seitenkanal (CVE-2025-46570). Nur gegen eigene Systeme mit Erlaubnis. "
              "Die Ampel bewertet aus Verteidigersicht: rot = Angriff erfolgreich / verwundbar.")
     # Aufwärmen (nicht gewertet), zugleich Kalibrierung des Template-Overheads
@@ -254,6 +277,9 @@ def summarize(recs, stages, cfg, settings):
     auc = quiet["auc"]
     ci = quiet.get("auc_ci")
     includes_half = bool(ci) and ci[0] <= 0.5 <= ci[1]   # Thesis-Kriterium: nicht von Raten unterscheidbar
+    # Unterscheidbarkeit ist symmetrisch: AUC 0,2 trennt so gut wie 0,8 (nur mit umgekehrtem Vorzeichen).
+    auc_dev = max(auc, 1 - auc)
+    dev_lo = (ci[0] if ci[0] > 0.5 else (1 - ci[1]) if ci[1] < 0.5 else 0.5) if ci else auc_dev
     ci_txt = f" (95%-KI {stats.fmt_num(ci[0], 2)}–{stats.fmt_num(ci[1], 2)})" if ci else ""
     leak = quiet.get("cached_available") and (
         (quiet.get("cached_auc") or 0) >= 0.9 or
@@ -262,26 +288,35 @@ def summarize(recs, stages, cfg, settings):
     # Verdict aus Verteidigersicht: rot = Angriff funktioniert, gruen = gelöst.
     # "Gelöst" nach Tabelle 3.4 der Arbeit: das 95%-KI der AUC schließt 0,5 ein
     # (kein cached_tokens-Leck). "Verwundbar": AUC-Untergrenze deutlich über 0,5.
-    if leak or (ci and ci[0] >= p["auc_fail"]) or auc >= p["auc_fail"]:
+    if leak or dev_lo >= p["auc_fail"] or (not includes_half and auc_dev >= p["auc_fail"]):
         verdict = "rot"
-    elif includes_half and not leak:
+    elif includes_half:
         verdict = "gruen"
-    elif auc >= p["auc_warn"]:
-        verdict = "gelb"
     else:
-        verdict = "gruen"
+        verdict = "gelb"   # signifikant ≠ 0,5, aber schwach – mit mehr Messungen evtl. nutzbar
 
-    salt_txt = {"none": "ohne cache_salt (geteilter Cache)",
-                "per_tenant": "mit cache_salt pro Mandant",
+    att = cfg.get("attack") or {}
+    separate = att.get("tenant_mode") == "keys"
+    salt_txt = {"none": ("mit getrennten Mandanten-Keys, ohne Client-Salt" if separate
+                         else "ohne cache_salt (geteilter Cache)"),
+                "per_tenant": "mit cache_salt pro Mandant (vom Client)",
                 "per_request": "mit cache_salt pro Anfrage"}[p["salt_mode"]]
+    sc = cfg.get("deploy_scenario") or {}
+    if sc.get("id"):
+        salt_txt += f", Szenario {sc['id']}"
     if verdict == "rot":
         head = (f"VERWUNDBAR {salt_txt}: Mandanten an der Antwortzeit unterscheidbar "
-                f"(AUC {stats.fmt_num(auc, 2)}{ci_txt}, deutlich über 0,5; Cohens d {stats.fmt_num(quiet['d'], 2)}, "
+                f"(AUC {stats.fmt_num(auc, 2)}{ci_txt}, deutlich von 0,5 entfernt; Cohens d {stats.fmt_num(quiet['d'], 2)}, "
                 f"Trefferquote {stats.fmt_pct(100 * (quiet.get('accuracy') or 0), 0)}).")
         if leak:
             head += (" Zusätzlich verrät cached_tokens die Treffer direkt, ohne Zeitmessung "
                      f"({stats.fmt_pct(quiet.get('cached_hit_share'), 0)} der Treffer gegen "
                      f"{stats.fmt_pct(quiet.get('cached_miss_share'), 0)} der Fehlschläge).")
+    elif verdict == "gelb" and auc < 0.5:
+        head = (f"Auffällig {salt_txt}: AUC {stats.fmt_num(auc, 2)}{ci_txt} – Treffer-Proben sind LANGSAMER, das "
+                "KI schließt 0,5 nicht ein. Kein Cache-Signal im üblichen Sinn; prüfen, ob ein Nebeneffekt "
+                "(Gateway, Verdrängung) messbar ist. Cohens d "
+                f"{stats.fmt_num(quiet['d'], 2)}.")
     elif verdict == "gelb":
         head = (f"Schwaches Signal {salt_txt}: AUC {stats.fmt_num(auc, 2)}{ci_txt}, Cohens d "
                 f"{stats.fmt_num(quiet['d'], 2)}. Mit mehr Messungen oder zu ruhigen Zeiten evtl. nutzbar.")
@@ -310,6 +345,8 @@ def summarize(recs, stages, cfg, settings):
                      "columns": ["Parameter", "Wert"],
                      "rows": [
                          ["cache_salt", salt_txt + (f" (Feld „{p['salt_field']}“)" if p["salt_mode"] != "none" else "")],
+                         ["Mandanten", "getrennte API-Keys (Gateway-Trennung geprüft)" if separate
+                          else "ein Key (nur client-seitig simuliert)"],
                          ["Opfer-Präfix", f"{stats.fmt_num(p['prefix_tokens'])} Tokens"],
                          ["Last anderer Mandanten", "keine" if not p["background_load"] else f"{p['background_load']} parallele Anfragen"],
                          ["Messungen je Bedingung", stats.fmt_num(p["trials"])],
@@ -371,7 +408,15 @@ def summarize(recs, stages, cfg, settings):
                                 "unit": "AUC (0,5 = Raten, 1,0 = perfekt lesbar)",
                                 "text": (f"95%-KI {stats.fmt_num(ci[0], 2)}–{stats.fmt_num(ci[1], 2)}" if ci else "")
                                         + (", cached_tokens-Leck" if leak else "")}},
-        "raw": {"auc": auc, "auc_ci": ci, "auc_ci_includes_half": includes_half,
+        "matrix": {"prefix_auc": round(auc, 3),
+                   "prefix_auc_ci": f"{stats.fmt_num(ci[0], 2)}–{stats.fmt_num(ci[1], 2)}" if ci else None,
+                   "prefix_auc_dev": round(auc_dev, 3),
+                   "prefix_d": round(quiet["d"], 2),
+                   "prefix_d_load": round(load["d"], 2) if load and load.get("d") is not None else None,
+                   "prefix_cached_leak": bool(leak),
+                   "prefix_vulnerable": verdict == "rot",
+                   "prefix_separate_keys": separate},
+        "raw": {"auc": auc, "auc_ci": ci, "auc_ci_includes_half": includes_half, "auc_deviation": auc_dev,
                 "cohens_d": quiet["d"], "accuracy": quiet.get("accuracy"), "cached_token_leak": bool(leak),
                 "auc_under_load": load.get("auc") if load else None,
                 "auc_ci_under_load": load.get("auc_ci") if load else None,

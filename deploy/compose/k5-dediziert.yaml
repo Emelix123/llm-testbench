@@ -1,0 +1,77 @@
+# K5 – Dedizierte vLLM-Instanz je Mandant auf derselben GPU (Trennung auf Engine-Ebene)
+#
+# Laut vLLM-Doku die Alternative zum Gateway-Salt: „Run a dedicated instance per tenant“. Hier
+# zwei Instanzen auf EINER GPU: Mandant A → vllm-a, Mandanten B und C → vllm-b. Kein gemeinsamer
+# KV-Cache, kein gemeinsamer Scheduler, ein Absturz trifft nur die eigene Instanz – die GPU
+# (Rechenwerke, Speicherbandbreite) teilen sich beide aber weiterhin. Echte Hardware-Trennung
+# wäre MIG; das gibt es auf GeForce-/Laptop-GPUs und unter WSL nicht.
+#
+# Braucht >= 8 GB VRAM (2x Gewichte + Aktivierungen). Auf der 4-GB-RTX-3050 passt es NICHT.
+# --enforce-eager spart die CUDA-Graphen.
+# Erwartung: Prefix-Seitenkanal GRÜN, Noisy Neighbor nur noch über die GPU-Rechenzeit sichtbar
+# (S_N > 1, aber keine Verdrängung von Cache-Blöcken), Durchsatz je Instanz deutlich kleiner.
+name: llmtb
+
+x-scenario:
+  id: K5
+  name: Dedizierte Instanz je Mandant
+  massnahmen: [dedizierte_instanz]
+
+services:
+  vllm-a:
+    extends: { file: common.yaml, service: vllm }
+    environment:
+      LLMTB_SCENARIO: K5-a
+      GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION_DEDICATED:-0.45}
+      KV_CACHE_MEMORY: ${KV_CACHE_MEMORY_DEDICATED:-}
+      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details --enforce-eager --max-num-seqs 16"
+    volumes:
+      - vllm-cache-a:/root/.cache/vllm
+    networks: [backend]
+
+  vllm-b:
+    extends: { file: common.yaml, service: vllm }
+    environment:
+      LLMTB_SCENARIO: K5-b
+      GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION_DEDICATED:-0.45}
+      KV_CACHE_MEMORY: ${KV_CACHE_MEMORY_DEDICATED:-}
+      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details --enforce-eager --max-num-seqs 16"
+    volumes:
+      - vllm-cache-b:/root/.cache/vllm
+    # nacheinander starten: vLLM misst beim Start den freien GPU-Speicher
+    depends_on:
+      vllm-a: { condition: service_healthy }
+    networks: [backend]
+
+  litellm:
+    extends: { file: common.yaml, service: litellm }
+    command: ["--config", "/app/llmtb/config.dedicated.yaml", "--port", "4000"]
+    environment:
+      VLLM_API_KEY: "ohne-engine-schluessel"
+      TENANT_ROUTING: '{"mandant-a": "llm-mandant-a", "mandant-b": "llm-mandant-b", "mandant-c": "llm-mandant-b"}'
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [edge, backend]
+
+  postgres:
+    extends: { file: common.yaml, service: postgres }
+    networks: [backend]
+
+  tenant-setup:
+    extends: { file: common.yaml, service: tenant-setup }
+    environment:
+      LLMTB_SCENARIO: K5
+    networks: [backend]
+
+networks:
+  edge: {}
+  backend: {}
+
+volumes:
+  vllm-cache: {}
+  vllm-cache-a: {}
+  vllm-cache-b: {}
+  pgdata: {}
+
+secrets:
+  cache_salt_secret: { file: ../secrets/cache_salt_secret }

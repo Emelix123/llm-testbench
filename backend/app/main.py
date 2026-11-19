@@ -57,7 +57,12 @@ async def post_profile(req: Request):
     prof = storage.save_profile(data)
     if data.get("api_key"):
         storage.set_secret(prof["api_key_name"], data["api_key"])
+    for role, value in (data.get("tenant_key_values") or {}).items():
+        name = (prof.get("tenant_keys") or {}).get(role)
+        if value and name:
+            storage.set_secret(name, value)
     prof["has_key"] = bool(storage.get_secret(prof["api_key_name"]))
+    prof["tenant_has_key"] = {r: bool(storage.get_secret(n)) for r, n in (prof.get("tenant_keys") or {}).items()}
     return prof
 
 
@@ -120,6 +125,11 @@ BUILTIN_SUITES = [
     {"id": "dauerlast", "name": "Dauerlast", "duration": "1–4 h",
      "items": [{"test": "endurance"}, {"test": "spike"}, {"test": "overload"}], "builtin": True,
      "note": "Nutzt die Kapazität aus dem letzten Kapazitäts-Sweep dieses Endpunkts."},
+    {"id": "konfigurationsvergleich", "name": "Konfigurationsvergleich (je Szenario)", "duration": "ca. 15–20 min",
+     "items": [{"test": "hardening_check"}, {"test": "prefix_cache_leak"}, {"test": "isolation_overhead"},
+               {"test": "watermark"}, {"test": "resource_contention"}], "builtin": True,
+     "note": "Einmal je Szenario K0–K6 laufen lassen (deploy/scenario.sh up Kx). Ergebnis: Seite „Konfigurationen“. "
+             "Wasserzeichen braucht den Detektor (K4/K6 oder ./scenario.sh detector up)."},
     {"id": "abnahme", "name": "Abnahme", "duration": "mehrere Stunden",
      "items": [{"test": "quickcheck"}, {"test": "config"}, {"test": "concurrency"}, {"test": "capacity_sweep"},
                {"test": "rate_test"}, {"test": "context_matrix"}, {"test": "cache_benefit"}, {"test": "cost_split"},
@@ -261,6 +271,26 @@ def get_batches():
         g["runs"].sort(key=lambda r: (r.get("batch_index") is None, r.get("batch_index") or 0, r["id"]))
     out.sort(key=lambda g: g.get("started_at") or "", reverse=True)
     return out
+
+
+@app.get("/api/matrix")
+def matrix(since: str | None = None, all: bool = False):
+    """Konfigurationsvergleich K0–K6: neuester Lauf je Szenario und Test, Kennzahlen nebeneinander."""
+    from .matrix import build
+    return build(since=since, include_unfinished=all)
+
+
+@app.get("/api/matrix/metrics")
+def matrix_metrics():
+    from .matrix import METRICS
+    return [{"key": k, "label": lab, "unit": u, "better": b, "area": a, "digits": d, "test": t}
+            for k, lab, u, b, a, d, t in METRICS]
+
+
+@app.get("/api/scenario")
+def scenario():
+    """Lokal laufendes Szenario laut deploy/.active-scenario.json (oder null)."""
+    return storage.active_scenario()
 
 
 @app.get("/api/report")

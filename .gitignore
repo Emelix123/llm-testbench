@@ -12,3 +12,7 @@ data/references.json
 data/reports/
 data/datasets/
 data/quality/
+# Deployment: Geheimnisse und Laufzeitstatus nie einchecken
+deploy/.env
+deploy/secrets/
+deploy/.active-scenario.json

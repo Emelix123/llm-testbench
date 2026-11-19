@@ -1,0 +1,47 @@
+{
+  "id": "watermark",
+  "order": 430,
+  "name": "Wasserzeichen (KI-VO Art. 50)",
+  "category": "Sicherheit (Mandantentrennung)",
+  "description": "Prüft die maschinenlesbare Kennzeichnung KI-erzeugter Texte (KI-VO Art. 50 Abs. 2): Erkennungsrate des vLLM-Gumbel-Wasserzeichens je Textlänge (Verhaltenskodex: ab 200 Tokens), Fehlalarme bei von Menschen geschriebenen Texten, ob ein Mandant per watermarking=false aussteigen kann und dass greedy-Antworten (temperature 0) kein Wasserzeichen tragen. Braucht den Detektor-Dienst des Betreibers (deploy: K4/K6 oder ./scenario.sh detector). Die Leistungskosten des Wasserzeichens zeigt der Konfigurationsvergleich (K6 gegen K0).",
+  "estimated_duration_s": 150,
+  "params": [
+    {"key": "detector_url", "label": "Detektor-URL (leer = aus dem Profil, sonst http://127.0.0.1:8090)", "type": "string", "default": ""},
+    {"key": "lengths", "label": "Textlängen (Output-Tokens)", "type": "int_list", "default": [50, 100, 200, 400]},
+    {"key": "samples", "label": "Texte je Länge", "type": "int", "default": 8},
+    {"key": "temperature", "label": "temperature", "type": "float", "default": 0.8},
+    {"key": "check_opt_out", "label": "Opt-out per watermarking=false prüfen", "type": "bool", "default": true},
+    {"key": "check_greedy", "label": "greedy (temperature 0) prüfen", "type": "bool", "default": true},
+    {"key": "min_rate", "label": "Grün ab Erkennungsrate (≥ 200 Tokens)", "type": "float", "default": 0.9},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ],
+  "explain": {
+    "kurz": "Anbieter textgenerierender KI-Systeme müssen die Ausgaben maschinenlesbar als KI-erzeugt kennzeichnen. vLLM verschiebt dafür beim Sampling mit einem geheimen Schlüssel die Token-Auswahl; wer den Schlüssel hat, weist das statistisch nach.",
+    "cve": "KI-VO Art. 50 Abs. 2 · Verhaltenskodex (≥ 200 Tokens) · vLLM Watermarking",
+    "ablauf": [
+      {"rolle": "system", "text": "vLLM erzeugt Text mit Gumbel-Wasserzeichen (--watermark-config, Schlüssel als Secret). Mit enforce=true kann ein Mandant nicht per watermarking=false aussteigen."},
+      {"rolle": "opfer", "text": "Ein Mandant lässt Texte verschiedener Länge erzeugen."},
+      {"rolle": "system", "text": "Der Detektor des Betreibers (gleicher Schlüssel) berechnet je Text einen p-Wert. p < 0,01 = Wasserzeichen nachgewiesen."},
+      {"rolle": "angreifer", "text": "Ein Mandant versucht, ohne Wasserzeichen zu generieren (watermarking=false) – das muss bei enforce scheitern."}
+    ],
+    "signal": "p-Wert des Detektors je Text; Anteil nachgewiesener Texte.",
+    "mass": "Erkennungsrate je Länge (Ziel ≥ 90 % ab 200 Tokens), Fehlalarmrate bei Menschentexten (Ziel 0), Opt-out verhindert (ja/nein).",
+    "verwundbar": "ROT: kein Wasserzeichen nachweisbar oder Detektor nicht erreichbar. GELB: Erkennung zu selten oder Mandant kann aussteigen.",
+    "geloest": "GRÜN: ab 200 Tokens zuverlässig erkannt, keine Fehlalarme, Opt-out wirkungslos.",
+    "quellen": [
+      {"ref": "Verordnung (EU) 2024/1689, Art. 50 Abs. 2", "text": "Kennzeichnungspflicht für synthetische Inhalte; Übergangsfrist bis 2. Dezember 2026 (Digital-Omnibus)."},
+      {"ref": "vLLM Watermarking", "text": "Gumbel-max, Philox-PRF, enforce, Grenzen bei temperature 0 und Beam Search.", "url": "https://docs.vllm.ai/en/latest/features/watermarking/"},
+      {"ref": "Kirchenbauer u. a. 2023", "text": "Statistischer Nachweis von Wasserzeichen über Token-Auswahl.", "url": "https://arxiv.org/abs/2301.10226"}
+    ]
+  },
+  "settings": {
+    "vllm": [
+      {"name": "--watermark-config {algorithm, key, context_width, enforce}", "wirkung": "Wasserzeichen an; enforce übersteuert watermarking=false je Anfrage."},
+      {"name": "Schlüssel als Secret (deploy/secrets/watermark_key)", "wirkung": "Der Schlüssel ist ein Geheimnis der Plattform – wer ihn hat, kann markieren und nachweisen."},
+      {"name": "--use-fp64-gumbel", "wirkung": "Robustere Erkennung, deutlich weniger Durchsatz."}
+    ],
+    "litellm": [
+      {"name": "Hook: Feld watermarking entfernen", "wirkung": "Zusätzlich zum enforce der Engine: Mandant kann das Feld gar nicht erst setzen."}
+    ]
+  }
+}

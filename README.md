@@ -10,7 +10,8 @@ Konfiguration stimmt. Läuft komplett auf dem Laptop – kein Server, keine Date
 ./start.sh          # Windows: start.bat
 ```
 
-Dann <http://localhost:8080> öffnen. Voraussetzung: Python ≥ 3.11 (empfohlen 3.12).
+Dann <http://localhost:8080> öffnen. Voraussetzung: Python ≥ 3.11 (empfohlen 3.12; unter WSL mit
+Ubuntu 22.04 ist nur 3.10 installiert → `docs/WSL-SETUP.md`).
 Das gebaute Frontend liegt in `frontend/dist`; npm braucht man nur, um es neu zu bauen.
 
 ### Ohne GPU ausprobieren
@@ -21,9 +22,42 @@ Das gebaute Frontend liegt in `frontend/dist`; npm braucht man nur, um es neu zu
 
 Startet einen Mock, der vLLM + LiteLLM nachbildet (feste Slots, KV-Cache, Prefill/Decode-Zeiten,
 Prefix-Cache, LiteLLM-Header, Tool Calling, JSON-Schema, Stop, Seed, Logprobs; mit `--vision` Bilder,
-mit `--reasoning` Denk-Teil, mit `--response-cache` ein fälschlich aktiver Antwort-Cache; `--block-size`, `--no-prefix-caching`, `--ignore-cache-salt`, `--no-cached-tokens` für den Prefix-Cache-Seitenkanal; `--max-n` für die n-Grenze bei der Ressourcenverdrängung).
+mit `--reasoning` Denk-Teil, mit `--response-cache` ein fälschlich aktiver Antwort-Cache; `--block-size`, `--no-prefix-caching`, `--ignore-cache-salt`, `--no-cached-tokens` für den Prefix-Cache-Seitenkanal; `--salt-per-key` bildet den Mandanten-Hook des Gateways nach (Salt je API-Key, Client-Salt wird ignoriert); `--max-n` für die n-Grenze bei der Ressourcenverdrängung).
 Der Mock ist bewusst einfach: Qualitätswerte gegen ihn sagen nichts aus. Endpunkt-Profil: URL `http://127.0.0.1:4000`, Modell `mock-llm`,
 beliebiger Key. Der Parallelitäts-Test sollte dann 24 messen.
+
+## Mandantentrennung messen: Szenarien K0–K6 (Bachelorarbeit)
+
+`deploy/` enthält sieben Docker-Compose-Konfigurationen von vLLM + LiteLLM, die sich nur in den
+Schutzmaßnahmen der Arbeit unterscheiden (K0 Standard … K4 voll gehärtet nach vLLM-Security-Doku,
+K5 dedizierte Instanzen, K6 Wasserzeichen). Details und Befunde: [`deploy/README.md`](deploy/README.md),
+WSL-Einrichtung: [`docs/WSL-SETUP.md`](docs/WSL-SETUP.md).
+
+```bash
+cd deploy && ./scenario.sh init && ./scenario.sh profile && ./scenario.sh up K0
+```
+
+Dann Suite **„Konfigurationsvergleich (je Szenario)“** mit Profil „Lokal (LiteLLM, Mandant A)“ starten,
+für jedes Szenario wiederholen. Die Seite **Konfigurationen** zeigt Sicherheit und Leistung aller
+Szenarien nebeneinander (Δ % zur Referenz, Diagramme) und exportiert die Tabelle als **LaTeX** (booktabs)
+oder CSV. Das laufende Szenario erkennt die Testplattform selbst (`deploy/.active-scenario.json`).
+
+### Kennzahlen der Arbeit → Test
+
+| Kennzahl (Arbeit) | Abschnitt | Test | Feld |
+|---|---|---|---|
+| TTFT, TPOT als Leistungsmetriken | 1.2.2 | Leistungskosten der Isolation | `ttft_p50_ms`, `tpot_p50_ms`, Durchsatz, Cache-Treffer |
+| Leistungsverlust je Gegenmaßnahme | 1.4.5 / Ausblick | Konfigurationen (Δ % zu K0) | alle Leistungswerte |
+| AUC Treffer/Fehlschlag (0,5 = Raten), 95%-KI | 1.3.4, CVE-2025-46570 | Prefix-Cache-Seitenkanal | `prefix_auc`, `prefix_auc_ci` |
+| Cohens d ruhig vs. unter Last (Abu Bakar: 0,78 → 0,21) | 1.3.4 | Prefix-Cache-Seitenkanal, `background_load` | `prefix_d`, `prefix_d_load` |
+| Granularität = Blockgröße | 1.2.3, 1.3.4 | Prefix-Cache-Seitenkanal, Sweep | AUC/`cached_tokens` je Übereinstimmung |
+| Gemeinsame Cache-Identität im Gateway (KeyPooling) | 1.3.4 | Prefix-Test mit getrennten Keys, Härtung | `prefix_separate_keys`, „Mandant B trifft …“ |
+| Ressourcenverdrängung, Slowdown S_N | 1.3.4 | Ressourcenverdrängung | `slowdown_sn`, Goodput, Präfix-Verdrängung |
+| Fairness-Metrik (Jain über normierte Leistung) | 1.2.5 | Ressourcenverdrängung | `jain_index` |
+| n-Grenze (CVE-2026-34756) | 1.3.4 | Ressourcenverdrängung, Härtung | `n_largest_accepted` |
+| Absturz/Codeausführung (CVE-2026-55514/-54234/-22778) | 1.3.4 | Härtung (Feature-Flags, Version) | Prüfpunkte |
+| Interne Schnittstellen nicht erreichbar | 1.3.3 | Härtung | Engine direkt, `/vllm/*`, Header |
+| Kennzeichnung ≥ 200 Tokens (KI-VO Art. 50) | 1.4.4 | Wasserzeichen | `wm_detect_rate`, `wm_fpr`, Opt-out |
 
 ## Aufbau
 
@@ -36,10 +70,13 @@ backend/app/        FastAPI: Lastgenerator, Messung, Ablage, API, SSE
   loadprofiles.py   die sechs Lastprofile
   quality.py        Referenzvergleich, LLM als Prüfer
   report.py         Prüfbericht HTML (SVG-Diagramme) und PDF
+  matrix.py         Konfigurationsvergleich K0–K6 (Kennzahl-Definitionen, neuester Lauf je Szenario)
   media.py          Testbilder
 tests/<name>/       ein Ordner pro Test: manifest.json + test.py (run, summarize, estimate)
 frontend/           Svelte + Vite + ECharts
 mock/               Mock-Endpunkt zum Ausprobieren
+deploy/             Szenarien K0–K6 (Docker Compose: vLLM + LiteLLM + Postgres), Mandanten-Hook, Detektor
+docs/               WSL-Einrichtung
 data/               alles, was das Tool speichert (siehe unten)
 ```
 
@@ -54,7 +91,10 @@ Neuer Ordner `tests/<name>/` mit
     `ctx.open_load()` oder `ctx.variable_load()`, meldet
     `ctx.progress()` und `ctx.stage()`. Jede Anfrage landet sofort in `requests.jsonl`.
   - `def summarize(recs, stages, cfg, settings) -> dict` – Kennzahlen, `verdict` (`gruen`/`gelb`/`rot`),
-    `headline` (ein Satz Klartext), `charts`, `tables`, optional `kpis`. Jederzeit neu ausführbar.
+    `headline` (ein Satz Klartext), `charts`, `tables`, optional `kpis` und `matrix` (Kennzahlen für den
+    Konfigurationsvergleich; Beschriftung/Richtung in `backend/app/matrix.py`). Jederzeit neu ausführbar.
+  - Mandanten: `ctx.send(body, meta, tenant="angreifer")` sendet mit dem Key von Mandant B (`ctx.has_tenant()`
+    prüft, ob das Profil ihn hat; sonst Haupt-Key).
   - optional `def estimate(params) -> Sekunden`.
 
 An der Oberfläche ändert sich nichts; das Backend lädt neue oder geänderte Testordner ohne Neustart.
@@ -90,8 +130,11 @@ markiert und aus den bis dahin gespeicherten Anfragen ausgewertet.
 | | Kontextlängen-Matrix | TTFT, Durchsatz und bediente Anfragen je Input-Länge, Prefill-Geschwindigkeit |
 | | Cache-Nutzen | TTFT-Ersparnis bei gemeinsamem System-Prompt und wachsendem Verlauf, Trefferquote |
 | | Kosten je Token-Art | € / 1 Mio. Input-, Output- und Cache-Tokens, Mischpreis je Lastprofil |
-| Sicherheit (Mandantentrennung) | Prefix-Cache-Seitenkanal (CVE-2025-46570) | Timing- und cached_tokens-Seitenkanal; AUC/Cohens d je Einstellung (cache_salt, Caching, Blockgröße, Last) |
-| | Ressourcenverdrängung / Noisy Neighbor (CVE-2026-34756) | Opfer-Latenz mit/ohne Störnachbar (Flut, lange Anfragen, großes n); Präfix-Verdrängung; n-Grenze |
+| Sicherheit (Mandantentrennung) | Leistungskosten der Isolation | Mehrmandanten-Last (gemeinsamer + eigener System-Prompt) je Laststufe: TTFT, TPOT, Durchsatz, Cache-Treffer, 429 – Grundlage des Konfigurationsvergleichs |
+| | Prefix-Cache-Seitenkanal (CVE-2025-46570) | Timing- und cached_tokens-Seitenkanal mit getrennten Mandanten-Keys; AUC/Cohens d je Einstellung (cache_salt, Caching, Blockgröße, Last) |
+| | Ressourcenverdrängung / Noisy Neighbor (CVE-2026-34756) | Opfer-Latenz mit/ohne Störnachbar (eigene Keys); Slowdown S_N, Jain-Fairness, Präfix-Verdrängung; n-Grenze |
+| | Härtung & Angriffsfläche | 22–28 Prüfpunkte nach vLLM-Security-Doku (je nach Szenario): Engine direkt erreichbar, `/vllm/*`-Durchreichung, Betriebsendpunkte, n, prompt_embeds, Video/SSRF, Cache-Trennung, Orakel, Header, Gateway-Verwaltung, Version/CVEs |
+| | Wasserzeichen (KI-VO Art. 50) | Erkennungsrate je Länge, Fehlalarme, Opt-out, greedy (braucht den Detektor aus `deploy/`) |
 | Konfiguration & Funktionen | Konfiguration & Funktionen | 13 Prüfpunkte: Tool Calling, Structured Output, Reasoning, Chat-Template, Kontextgrenze, Nadel im Heuhaufen, Multimodal, Parameter, Streaming-Format, Abbruch, LiteLLM-Durchreichung, LiteLLM-Antwort-Cache, Steckbrief |
 | Stabilität & Betrieb | Dauerlast | 1–4 h bei 75 % der Kapazität, Drift von TTFT und Tokens/s pro Stunde |
 | | Lastspitze | 150 % für 2 min, dann 50 %: Erholungszeit, 429 gegenüber Timeouts |
@@ -147,11 +190,11 @@ Variierbare Einstellungen (Parameter des Tests):
 | `salt_field` | Feldname des Salts im Request (prüft zugleich, ob LiteLLM ihn durchreicht – vgl. CVE-2026-105752) |
 | `prefix_tokens` | Länge des Opfer-Präfixes |
 | `background_load` | Zahl paralleler Mitmandanten; misst zusätzlich unter Last |
-| `granularity_sweep` | Sweep über die Präfix-Übereinstimmung: zeigt, dass Treffer nur an **Blockgrenzen** entstehen (bei 16 Tokens je Block muss ein Angreifer je einen ganzen Block raten) |
+| `granularity_sweep` | Sweep über die Präfix-Übereinstimmung: zeigt, dass Treffer nur an **Blockgrenzen** entstehen (ein Angreifer muss je einen ganzen Block raten; vLLM 0.34 nutzt standardmäßig 64 Tokens je Block, das vLLM-Paper 16) |
 
-Der Granularitäts-Sweep reproduziert den CVE-Befund: unterhalb einer Blockgröße (z. B. 8 von 16
-Tokens) bleibt die AUC bei ~0,5, ab einem vollen Block springt sie gegen 1,0; `cached_tokens`
-steigt blockweise.
+Der Granularitäts-Sweep reproduziert den CVE-Befund: unterhalb einer Blockgröße bleibt die AUC bei ~0,5,
+ab einem vollen Block steigt sie; `cached_tokens` steigt blockweise. Gemessen an vLLM 0.34 (K0): 0–32
+übereinstimmende Tokens ohne Treffer, ab 64 Tokens `cached_tokens` = 64 – die Standard-Blockgröße ist dort 64.
 
 **Verwundbar vs. gelöst (Kriterium der Arbeit, Tab. 3.4):** Zur AUC wird ein 95%-Konfidenzintervall
 per Bootstrap berechnet. Schließt das Intervall 0,5 ein, ist der Seitenkanal nicht signifikant von
@@ -209,6 +252,7 @@ realistischen Bereich und der Lastabfall wird sichtbar.
 | Parallelität & Kapazität | Parallelitäts-Test, Kapazitäts-Sweep, Kontextlängen-Matrix | ca. 1 h |
 | Konfiguration | alle Prüfpunkte | ca. 10 min |
 | Dauerlast | Dauerlast, Lastspitze, Überlast | 1–4 h |
+| Konfigurationsvergleich (je Szenario) | Härtung, Prefix-Seitenkanal, Leistungskosten, Wasserzeichen, Ressourcenverdrängung | ca. 15–20 min |
 | Abnahme | alles zusammen, plus Prüfbericht als HTML und PDF in `data/reports/` | mehrere Stunden |
 
 Den Prüfbericht gibt es für jeden Lauf auch über die Knöpfe auf der Ergebnisseite. Das PDF erzeugt
@@ -219,13 +263,19 @@ ohne Browser bleibt der HTML-Bericht, der sich drucken lässt.
 
 - Ergebnisseite: vier Kennzahlen, Karte je Test mit Ampel und Klartext, Details auf Klick, ZIP-Export.
 - Kostenrechner mit Reglern für Auslastung, Lesezeit und Maschinenkosten.
-- Vergleich: zwei Läufe desselben Tests nebeneinander, Diagramme überlagert, Differenzen.
+- Vergleich: zwei Läufe desselben Tests nebeneinander, Diagramme überlagert, Differenzen (inkl. Sicherheits-/Leistungskennzahlen mit Δ %).
+- Konfigurationen: alle Szenarien K0–K6 in einer Matrix – Bilanz (Ampel je Sicherheitstest + Leistungsverlust), Tabellen je Schutzziel, Δ-Diagramme, Export LaTeX/CSV.
 - Absichtlich provozierte Ablehnungen (Grenzwerte, Kontextgrenze, Abbruch-Test) zählen nicht zur Fehlerquote.
 
 ## Endpunkt-Profil
 
 URL von LiteLLM, Modell, Tokenizer (Hugging-Face-Name oder Pfad zu `tokenizer.json`), max. Kontext,
 API-Key und die Häkchen „Vision-Modell“ und „Reasoning-Modell“ (steuern Multimodal- und Reasoning-Prüfung).
+
+Für die Sicherheitstests zusätzlich (aufklappbar „Sicherheitstests“): API-Keys für **Mandant B (Angreifer)**
+und **Mandant C (Last)** – der Haupt-Key ist Mandant A (Opfer) –, die direkte Engine-URL (sollte nicht
+erreichbar sein) und die URL des Wasserzeichen-Detektors. `deploy/scenario.sh profile` füllt das aus.
+Mit getrennten Keys prüfen die Tests die Trennung **im Gateway**; mit einem Key nur die Engine.
 
 ## vLLM- und LiteLLM-Einstellungen je Test
 

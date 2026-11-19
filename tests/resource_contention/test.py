@@ -35,7 +35,17 @@ from app import stats
 
 
 def estimate(params):
-    return 30 + params["baseline_s"] + params["attack_s"]
+    return 40 + params["baseline_s"] + params.get("attacker_alone_s", 20) + params["attack_s"]
+
+
+def _roles(ctx) -> tuple[str, str]:
+    if ctx.params.get("tenant_mode", "keys") == "keys" and ctx.has_tenant("angreifer"):
+        return "opfer", "angreifer"
+    return "opfer", "opfer"
+
+
+def _now_ms(ctx) -> float:
+    return round((time.perf_counter_ns() - ctx.t0_ns) / 1e6, 1)
 
 
 # ------------------------------------------------------------------ Bausteine
@@ -50,28 +60,36 @@ async def _victim_phase(ctx, phase: str, duration: float, prog_a: float, prog_b:
         while time.monotonic() < end and not ctx.cancelled:
             text = ctx.factory.make(p["victim_input"], wr, unique=True)  # frisch -> misst Verdrängung, nicht Cache
             await ctx.send(ctx.chat_body(text, p["victim_output"]),
-                           {"stage": "victim", "phase": phase})
+                           {"stage": "victim", "phase": phase}, tenant=_roles(ctx)[0])
             frac = min(1.0, (time.monotonic() - t0) / duration)
             ctx.progress(prog_a + (prog_b - prog_a) * frac, f"Opfer misst ({phase})")
     await asyncio.gather(*(worker(i) for i in range(max(1, p["victim_concurrency"]))))
 
 
-async def _noisy(ctx, stop: asyncio.Event):
+async def _noisy(ctx, stop: asyncio.Event, phase: str = "attack"):
     """Störnachbar: belegt Ressourcen bis stop gesetzt ist."""
     p = ctx.params
     mode = p["attack_mode"]
+    ta = _roles(ctx)[1]
+
+    async def backoff(rejected: bool):
+        # Abgewiesene Anfragen (429 vom Gateway) nicht in einer Endlosschleife wiederholen
+        if rejected:
+            await asyncio.sleep(0.2)
 
     async def flood(i):
         wr = random.Random(ctx.rng.getrandbits(64))
         while not stop.is_set() and not ctx.cancelled:
-            await ctx.send(ctx.chat_body(ctx.factory.make(1000, wr, unique=True), 300),
-                           {"stage": "attacker", "mode": "flood"})
+            r = await ctx.send(ctx.chat_body(ctx.factory.make(1000, wr, unique=True), 300),
+                               {"stage": "attacker", "mode": "flood", "phase": phase}, tenant=ta)
+            await backoff(r.status in (429, 503))
 
     async def long(i):
         wr = random.Random(ctx.rng.getrandbits(64))
         while not stop.is_set() and not ctx.cancelled:
-            await ctx.send(ctx.chat_body(ctx.factory.make(1000, wr, unique=True), p["attack_output_tokens"]),
-                           {"stage": "attacker", "mode": "long"})
+            r = await ctx.send(ctx.chat_body(ctx.factory.make(1000, wr, unique=True), p["attack_output_tokens"]),
+                               {"stage": "attacker", "mode": "long", "phase": phase}, tenant=ta)
+            await backoff(r.status in (429, 503))
 
     async def big_n(i):
         wr = random.Random(ctx.rng.getrandbits(64))
@@ -79,7 +97,8 @@ async def _noisy(ctx, stop: asyncio.Event):
             body = ctx.chat_body(ctx.factory.make(1000, wr, unique=True), 200, force=False)
             body["n"] = p["attack_n"]
             body["temperature"] = 0.9
-            await ctx.once(body, {"stage": "attacker", "mode": "big_n"}, record=True)
+            r = await ctx.once(body, {"stage": "attacker", "mode": "big_n", "phase": phase}, record=True, tenant=ta)
+            await backoff(r["status"] != 200)
 
     conc = max(1, p["attack_concurrency"])
     if mode == "flood":
@@ -95,13 +114,15 @@ async def _noisy(ctx, stop: asyncio.Event):
 
 async def _n_cap_probe(ctx):
     """Prüft, bis zu welchem n der Server annimmt (ohne Mandantengrenze offen)."""
-    ladder = sorted({2, 64, 128, 1024, 16384, int(ctx.params["attack_n"]), 100000})
+    # Bewusst keine 16384/100000 mehr: Ein ungebremstes riesiges n kann die Engine (genau die CVE)
+    # zum Absturz bringen – die Leiter zeigt die Grenze auch so (über n_ladder anpassbar).
+    ladder = sorted({int(x) for x in (ctx.params.get("n_ladder") or [2, 17, 65, 129, 1024]) if int(x) > 0})
     largest_ok, reject_at, reject_msg = None, None, None
     for n in ladder:
-        body = ctx.chat_body("Sag kurz Hallo.", 8, force=False)
+        body = ctx.chat_body("Sag kurz Hallo.", 4, force=False)
         body["n"] = n
         body["temperature"] = 0.9
-        r = await ctx.once(body, {"stage": "ncap", "n": n}, record=True)
+        r = await ctx.once(body, {"stage": "ncap", "n": n}, record=True, tenant=_roles(ctx)[1])
         if r["status"] == 200:
             choices = len(((r.get("json") or {}).get("choices")) or [])
             largest_ok = {"n": n, "choices": choices}
@@ -115,15 +136,22 @@ async def _n_cap_probe(ctx):
 
 async def _evict_measure(ctx, when: str, text: str):
     """Misst die TTFT des (zuvor gecachten) Opfer-Präfixes – ohne ihn neu zu primen."""
-    r = await ctx.send(ctx.chat_body(text, 1, force=False), {"stage": "evict", "when": when})
+    r = await ctx.send(ctx.chat_body(text, 1, force=False), {"stage": "evict", "when": when},
+                       tenant=_roles(ctx)[0])
     return r
 
 
 async def run(ctx):
     p = ctx.params
+    tv, ta = _roles(ctx)
     ctx.extra_config["attack"] = {"mode": p["attack_mode"], "attack_concurrency": p["attack_concurrency"],
                                   "attack_n": p["attack_n"], "attack_output_tokens": p["attack_output_tokens"],
-                                  "victim_concurrency": p["victim_concurrency"]}
+                                  "victim_concurrency": p["victim_concurrency"],
+                                  "tenant_mode": "keys" if ta != tv else "single"}
+    phases = ctx.extra_config.setdefault("phases", {})
+    if p.get("tenant_mode", "keys") == "keys" and ta == tv:
+        ctx.note("Das Profil hat keinen Angreifer-Key – Opfer und Störnachbar teilen einen Key. "
+                 "Grenzen je Mandant (LiteLLM) treffen dann beide; der Test misst so nur die Engine.")
     ctx.note("Ressourcenverdrängung / Noisy Neighbor (CVE-2026-34756). Nur gegen eigene Systeme mit Erlaubnis. "
              "Die Ampel bewertet aus Verteidigersicht: rot = Opfer stark beeinträchtigt.")
     await ctx.warmup(n=10)
@@ -136,24 +164,42 @@ async def run(ctx):
     evict_text = None
     if p["eviction_test"]:
         evict_text = ctx.factory.make(p["evict_prefix_tokens"], ctx.rng, unique=True)
-        await ctx.send(ctx.chat_body(evict_text, 1, force=False), {"stage": "evict_prime", "when": "setup"})
+        await ctx.send(ctx.chat_body(evict_text, 1, force=False), {"stage": "evict_prime", "when": "setup"}, tenant=tv)
         await _evict_measure(ctx, "before", evict_text)
 
     # Phase 1: ohne Angriff
     if ctx.cancelled:
         return
-    await _victim_phase(ctx, "baseline", p["baseline_s"], 0.1, 0.4)
+    t = _now_ms(ctx)
+    await _victim_phase(ctx, "baseline", p["baseline_s"], 0.1, 0.35)
+    phases["baseline"] = [t, _now_ms(ctx)]
 
-    # Phase 2: mit Störnachbar
+    # Phase 2: Störnachbar allein (Bezugsgröße für seine normierte Leistung / Fairness)
+    if ctx.cancelled:
+        return
+    if p.get("attacker_alone_s", 20) > 0:
+        ctx.progress(0.37, "Störnachbar allein")
+        stop = asyncio.Event()
+        t = _now_ms(ctx)
+        atk = asyncio.create_task(_noisy(ctx, stop, phase="alone"))
+        await asyncio.sleep(p.get("attacker_alone_s", 20))
+        stop.set()
+        phases["alone"] = [t, _now_ms(ctx)]
+        await atk
+        await asyncio.sleep(2)  # laufende Anfragen ausklingen lassen
+
+    # Phase 3: Opfer mit Störnachbar
     if ctx.cancelled:
         return
     stop = asyncio.Event()
-    atk = asyncio.create_task(_noisy(ctx, stop))
+    atk = asyncio.create_task(_noisy(ctx, stop, phase="attack"))
     try:
         await asyncio.sleep(min(6, max(2, p["attack_s"] * 0.15)))  # Störnachbar füllt den Cache
         if p["eviction_test"] and not ctx.cancelled:
             await _evict_measure(ctx, "during", evict_text)
+        t = _now_ms(ctx)
         await _victim_phase(ctx, "attack", p["attack_s"], 0.45, 0.98)
+        phases["attack"] = [t, _now_ms(ctx)]
     finally:
         stop.set()
         await atk
@@ -217,6 +263,27 @@ def summarize(recs, stages, cfg, settings):
         evicted = {"ttft_before": tb, "ttft_during": td, "cached_before": cb, "cached_during": cd,
                    "verdraengt": verdraengt, "note": ev_note}
 
+    # Fairness: normierte Leistung je Mandant (bediente gewichtete Tokens/s unter Konkurrenz ÷ allein)
+    ph = cfg.get("phases") or {}
+
+    def rate(rows, key):
+        w = ph.get(key)
+        if not w or w[1] <= w[0]:
+            return None
+        return stats.service_tokens(rows) / ((w[1] - w[0]) / 1000)
+
+    atk_rows = [r for r in recs if r.get("stage") == "attacker"]
+    a_alone = [r for r in atk_rows if r.get("phase") == "alone"]
+    a_atk = [r for r in atk_rows if r.get("phase") == "attack"]
+    v_base_rate, v_atk_rate = rate(base, "baseline"), rate(atk, "attack")
+    a_alone_rate, a_atk_rate = rate(a_alone, "alone"), rate(a_atk, "attack")
+    np_v = (v_atk_rate / v_base_rate) if v_base_rate and v_atk_rate is not None else None
+    np_a = (a_atk_rate / a_alone_rate) if a_alone_rate and a_atk_rate is not None else None
+    jain = stats.jain_index([np_v, np_a]) if np_v is not None and np_a is not None else None
+    victim_share = (100 * v_atk_rate / (v_atk_rate + a_atk_rate)) if v_atk_rate and a_atk_rate else None
+    a_rej = [r for r in a_atk if r.get("status") in (429, 503)]
+    a_rej_pct = 100 * len(a_rej) / len(a_atk) if a_atk else None
+
     # Verdict (Verteidigersicht): rot = Opfer stark beeinträchtigt
     strong = ((ttft_ratio or 1) >= 3 or (gp_base and gp_atk is not None and gp_atk < gp_base * 0.5)
               or preempt > 0)
@@ -238,6 +305,11 @@ def summarize(recs, stages, cfg, settings):
         head += " Geringe Verdrängung – Ratenbegrenzung je Mandant scheint zu greifen."
     if evicted and evicted["verdraengt"] is True:
         head += " Der gecachte Präfix des Opfers wurde verdrängt (cached_tokens fallen)."
+    if jain is not None:
+        head += (f" Fairness (Jain, normierte Leistung): J={stats.fmt_num(jain, 2)} – Opfer behält "
+                 f"{stats.fmt_pct(100 * np_v, 0)}, Störnachbar {stats.fmt_pct(100 * np_a, 0)} seiner Leistung allein.")
+    if a_rej_pct:
+        head += f" {stats.fmt_pct(a_rej_pct, 0)} der Störnachbar-Anfragen abgewiesen (429/503 – Grenze greift)."
     if n_uncapped:
         head += f" ⚠ n wird nicht wirksam begrenzt (bis n={stats.fmt_num(lok.get('n'))} angenommen)."
     elif n_high:
@@ -275,6 +347,17 @@ def summarize(recs, stages, cfg, settings):
                   ["n-Grenze des Servers", (f"bis n={stats.fmt_num(lok.get('n'))} angenommen"
                                             + (f", abgelehnt ab n={stats.fmt_num(ncap.get('reject_at'))}" if ncap.get("reject_at") else " (keine erkannt)"))]]},
     ]
+    tables.append({"title": "Fairness zwischen den Mandanten (normierte Leistung)",
+                   "columns": ["Mandant", "Leistung allein (gew. Tokens/s)", "unter Konkurrenz", "normierte Leistung"],
+                   "rows": [["Opfer", stats.fmt_num(v_base_rate, 0), stats.fmt_num(v_atk_rate, 0),
+                             stats.fmt_pct(100 * np_v, 0) if np_v is not None else "–"],
+                            ["Störnachbar", stats.fmt_num(a_alone_rate, 0), stats.fmt_num(a_atk_rate, 0),
+                             stats.fmt_pct(100 * np_a, 0) if np_a is not None else "–"],
+                            ["Jain-Index J", "", "", stats.fmt_num(jain, 3) if jain is not None else "–"],
+                            ["Anteil des Opfers an der bedienten Arbeit", "", "",
+                             stats.fmt_pct(victim_share, 1) if victim_share is not None else "–"],
+                            ["Störnachbar abgewiesen (429/503)", "", "",
+                             stats.fmt_pct(a_rej_pct, 1) if a_rej_pct is not None else "–"]]})
     if evicted:
         tables.append({"title": "Präfix-Verdrängung (gecachter Opfer-Präfix)",
                        "columns": ["Zeitpunkt", "TTFT", "cached_tokens"],
@@ -295,7 +378,16 @@ def summarize(recs, stages, cfg, settings):
                                      "unit": "Slowdown-Faktor S_N des Opfers",
                                      "text": f"TTFT ×{stats.fmt_num(ttft_ratio, 1)}, Goodput "
                                              f"{stats.fmt_pct(gp_base, 0)} → {stats.fmt_pct(gp_atk, 0)}"}},
+        "matrix": {"slowdown_sn": round(slowdown, 2) if slowdown else None,
+                   "victim_ttft_ratio": round(ttft_ratio, 2) if ttft_ratio else None,
+                   "victim_goodput_attack_pct": gp_atk,
+                   "jain_index": round(jain, 3) if jain is not None else None,
+                   "victim_share_pct": round(victim_share, 1) if victim_share is not None else None,
+                   "attacker_rejected_pct": round(a_rej_pct, 1) if a_rej_pct is not None else None,
+                   "n_largest_accepted": lok.get("n"),
+                   "noisy_vulnerable": verdict == "rot"},
         "raw": {"slowdown_factor_e2e": slowdown, "ttft_p95_ratio": ttft_ratio, "tpot_p95_ratio": tpot_ratio,
+                "jain_index": jain, "np_victim": np_v, "np_attacker": np_a, "victim_share_pct": victim_share,
                 "goodput_base": gp_base, "goodput_attack": gp_atk, "victim_preempted": preempt,
                 "n_uncapped": n_uncapped, "largest_n_accepted": lok.get("n"),
                 "prefix_evicted": bool(evicted and evicted["verdraengt"])},

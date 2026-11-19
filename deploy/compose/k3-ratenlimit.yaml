@@ -1,0 +1,59 @@
+# K3 – Grenzen je Mandant (Gegenmaßnahme Ressourcenverdrängung / Noisy Neighbor, CVE-2026-34756)
+#
+# = K0 + Verfügbarkeits-Maßnahmen:
+#   * LiteLLM: max. 8 parallele Anfragen und 600 Anfragen/min je Mandanten-Key (429 darüber).
+#     vLLM plant fair je Anfrage (FCFS), nicht je Mandant – die Fairness muss das Gateway herstellen.
+#   * Gateway-Hook: n <= 16 je Anfrage (vLLM kennt nur eine globale Grenze).
+#   * vLLM: VLLM_MAX_N_SEQUENCES=64 (Doku-Empfehlung für erreichbare Instanzen: 64–128).
+#
+# Erwartung: Slowdown S_N des Opfers deutlich kleiner als in K0, Jain-Index näher an 1,
+# große n werden abgelehnt.
+name: llmtb
+
+x-scenario:
+  id: K3
+  name: Grenzen je Mandant
+  massnahmen: [ratenlimit, n_grenze]
+
+services:
+  vllm:
+    extends: { file: common.yaml, service: vllm }
+    environment:
+      LLMTB_SCENARIO: K3
+      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details"
+      VLLM_MAX_N_SEQUENCES: "64"
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [backend]
+
+  litellm:
+    extends: { file: common.yaml, service: litellm }
+    environment:
+      VLLM_API_KEY: "ohne-engine-schluessel"
+      TENANT_MAX_N: "16"
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [edge, backend]
+
+  postgres:
+    extends: { file: common.yaml, service: postgres }
+    networks: [backend]
+
+  tenant-setup:
+    extends: { file: common.yaml, service: tenant-setup }
+    environment:
+      LLMTB_SCENARIO: K3
+      TENANT_MAX_PARALLEL: "8"
+      TENANT_RPM: "600"
+    networks: [backend]
+
+networks:
+  edge: {}
+  backend: {}
+
+volumes:
+  vllm-cache: {}
+  pgdata: {}
+
+secrets:
+  cache_salt_secret: { file: ../secrets/cache_salt_secret }

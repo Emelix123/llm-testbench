@@ -1,0 +1,45 @@
+# LiteLLM-Gateway für Szenario K5: dedizierte vLLM-Instanz je Mandant (auf derselben GPU).
+# Der Hook leitet jeden Mandanten fest auf seine Instanz (TENANT_ROUTING); der Client fragt
+# weiterhin Modell "llm" an.
+model_list:
+  - model_name: llm-mandant-a
+    litellm_params:
+      model: hosted_vllm/llm
+      api_base: http://vllm-a:8000/v1
+      api_key: os.environ/VLLM_API_KEY
+      max_retries: 0
+      timeout: 600
+      stream_timeout: 600
+  - model_name: llm-mandant-b
+    litellm_params:
+      model: hosted_vllm/llm
+      api_base: http://vllm-b:8000/v1
+      api_key: os.environ/VLLM_API_KEY
+      max_retries: 0
+      timeout: 600
+      stream_timeout: 600
+  # Platzhalter, damit Anfragen an "llm" angenommen werden; der Hook schreibt das Modell um.
+  # Ohne Routing-Eintrag weist der Hook die Anfrage ab (403) – sie erreicht diese Instanz nie.
+  - model_name: llm
+    litellm_params:
+      model: hosted_vllm/llm
+      api_base: http://vllm-a:8000/v1
+      api_key: os.environ/VLLM_API_KEY
+      max_retries: 0
+
+litellm_settings:
+  callbacks: tenant_isolation.proxy_handler_instance
+  drop_params: false
+  num_retries: 0
+  request_timeout: 600
+  cache: false
+
+router_settings:
+  num_retries: 0
+  allowed_fails: 1000
+  cooldown_time: 0
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  store_prompts_in_spend_logs: false

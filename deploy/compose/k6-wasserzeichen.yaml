@@ -1,0 +1,63 @@
+# K6 – Wasserzeichen (KI-VO Art. 50 Abs. 2) ohne weitere Maßnahmen
+#
+# = K0 + Gumbel-Wasserzeichen in vLLM (--watermark-config, enforce=true: Mandanten können per
+# watermarking=false nicht aussteigen). Der Schlüssel liegt als Docker-Secret in deploy/secrets/.
+# Dazu der Detektor-Dienst auf 127.0.0.1:8090 (nur Betreiber).
+#
+# Zweck: Leistungskosten des Wasserzeichens isoliert messen (Vergleich K6 vs. K0) und die
+# Erkennungsrate je Textlänge bestimmen (Verhaltenskodex: Wasserzeichen ab 200 Tokens).
+# Grenzen: temperature 0 (greedy) und Beam Search tragen kein Wasserzeichen.
+name: llmtb
+
+x-scenario:
+  id: K6
+  name: Wasserzeichen
+  massnahmen: [wasserzeichen]
+
+services:
+  vllm:
+    extends: { file: common.yaml, service: vllm }
+    environment:
+      LLMTB_SCENARIO: K6
+      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details"
+      WATERMARK_KEY_FILE: /run/secrets/watermark_key
+      WATERMARK_ENFORCE: "true"
+    secrets: [watermark_key]
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [backend]
+
+  litellm:
+    extends: { file: common.yaml, service: litellm }
+    environment:
+      VLLM_API_KEY: "ohne-engine-schluessel"
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [edge, backend]
+
+  postgres:
+    extends: { file: common.yaml, service: postgres }
+    networks: [backend]
+
+  tenant-setup:
+    extends: { file: common.yaml, service: tenant-setup }
+    environment:
+      LLMTB_SCENARIO: K6
+    networks: [backend]
+
+  wm-detector:
+    extends: { file: common.yaml, service: wm-detector }
+    networks: [ops]
+
+networks:
+  edge: {}
+  backend: {}
+  ops: {}
+
+volumes:
+  vllm-cache: {}
+  pgdata: {}
+
+secrets:
+  cache_salt_secret: { file: ../secrets/cache_salt_secret }
+  watermark_key: { file: ../secrets/watermark_key }

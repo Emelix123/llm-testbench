@@ -120,6 +120,13 @@ class RunContext:
         self.rng = random.Random(self.seed)
         self.ep = Endpoint(profile["base_url"], profile["model"],
                            storage.get_secret(profile.get("api_key_name")))
+        # Mandanten für die Sicherheitstests: "opfer" = Haupt-Key des Profils, dazu optional
+        # "angreifer" und "last" mit eigenen Keys (eigene Virtual Keys im Gateway).
+        self.tenant_eps: dict[str, Endpoint] = {"opfer": self.ep}
+        for role, secret_name in (profile.get("tenant_keys") or {}).items():
+            key = storage.get_secret(secret_name)
+            if key:
+                self.tenant_eps[role] = Endpoint(profile["base_url"], profile["model"], key)
         self.timeout_s = float(settings["client"]["request_timeout_s"])
         self.client = make_client(timeout_s=self.timeout_s)
         self.factory = get_factory(profile.get("tokenizer"))
@@ -135,6 +142,14 @@ class RunContext:
         self._req_seq = 0
         self.compact_itl = False  # Dauertests: ITL je Anfrage nur zusammengefasst speichern
         self._cpu_warn = settings["client"]["cpu_warn_pct"]
+
+    # ------------------------------------------------------------ Mandanten
+    def has_tenant(self, role: str) -> bool:
+        return role in self.tenant_eps
+
+    def tenant_ep(self, role: str | None) -> Endpoint:
+        """Endpunkt des Mandanten; ohne eigenen Key fällt er auf den Haupt-Key zurück."""
+        return self.tenant_eps.get(role or "opfer", self.ep)
 
     # ------------------------------------------------------------ Rückmeldung
     @property
@@ -170,12 +185,16 @@ class RunContext:
 
     async def send(self, body: dict, meta: dict | None = None, *, record: bool = True,
                    keep_text: bool = False, keep_chunks: bool = False,
-                   cancel_event: asyncio.Event | None = None) -> StreamResult:
-        meta = meta or {}
+                   cancel_event: asyncio.Event | None = None, tenant: str | None = None) -> StreamResult:
+        meta = dict(meta or {})
+        tenant = tenant or meta.get("tenant")   # Lastgeneratoren geben den Mandanten über meta mit
+        if tenant:
+            meta.setdefault("tenant", tenant)
         self.live.inflight += 1
         cpu_at_send = cpu.value
         try:
-            res = await _stream_with_live(self, body, keep_text, keep_chunks, cancel_event)
+            res = await _stream_with_live(self, body, keep_text, keep_chunks, cancel_event,
+                                          ep=self.tenant_ep(tenant))
         finally:
             self.live.inflight -= 1
         self.live.requests += 1
@@ -362,12 +381,16 @@ class RunContext:
 
         await asyncio.gather(driver(), *(worker(i) for i in range(maxc)))
 
-    async def once(self, body: dict, meta: dict | None = None, record: bool = False) -> dict:
+    async def once(self, body: dict, meta: dict | None = None, record: bool = False,
+                   tenant: str | None = None) -> dict:
         """Nicht-streamende Anfrage (für Funktionsprüfungen)."""
         from .client import chat_once
+        meta = dict(meta or {})
+        if tenant:
+            meta.setdefault("tenant", tenant)
         self.live.inflight += 1
         try:
-            res = await chat_once(self.client, self.ep, body, timeout_s=self.timeout_s)
+            res = await chat_once(self.client, self.tenant_ep(tenant), body, timeout_s=self.timeout_s)
         finally:
             self.live.inflight -= 1
         self.live.requests += 1
@@ -420,13 +443,13 @@ class RunContext:
 
 
 async def _stream_with_live(ctx: RunContext, body: dict, keep_text: bool, keep_chunks: bool = False,
-                            cancel_event: asyncio.Event | None = None) -> StreamResult:
+                            cancel_event: asyncio.Event | None = None, ep: Endpoint | None = None) -> StreamResult:
     from . import client as client_mod
     ev = ctx.cancel
     if cancel_event is not None:
         # Zusätzliches Abbruch-Signal (z. B. Abbruch-Test): beide Ereignisse beachten.
         ev = _AnyEvent(ctx.cancel, cancel_event)
-    return await client_mod.stream_chat(ctx.client, ctx.ep, body, ctx.t0_ns, timeout_s=ctx.timeout_s,
+    return await client_mod.stream_chat(ctx.client, ep or ctx.ep, body, ctx.t0_ns, timeout_s=ctx.timeout_s,
                                         keep_text=keep_text, cancel_event=ev,
                                         on_chunk=ctx.live.chunk, keep_chunks=keep_chunks)
 
@@ -572,6 +595,8 @@ class Batch:
             "client": {"network_latency": net, "network_kind": network_kind(),
                        "sleep_inhibit": inhibit_method, "python": sys.version.split()[0]},
             "endpoint_fingerprint": fingerprint,
+            "deploy_scenario": storage.active_scenario(self.profile),
+            "tenants": sorted(ctx.tenant_eps),
             "slo": settings["slo"],
         }
         storage.write_json(rd / "config.json", cfg)

@@ -1,0 +1,52 @@
+# K2 – Prefix-Caching abgeschaltet (stärkste Trennung des KV-Caches, höchste Leistungskosten)
+#
+# = K0 + genau eine Maßnahme: --disable-prefix-caching. Kein Block wird zwischen Anfragen geteilt –
+# weder zwischen noch innerhalb von Mandanten. Schließt den Seitenkanal und Cache-Kollisionen
+# vollständig, kostet aber den gesamten Prefill-Nutzen (TTFT bei gemeinsamem System-Prompt).
+#
+# Erwartung: Prefix-Seitenkanal GRÜN, TTFT/Durchsatz schlechter als K0/K1 bei gemeinsamen Präfixen.
+name: llmtb
+
+x-scenario:
+  id: K2
+  name: ohne Prefix-Caching
+  massnahmen: [prefix_caching_aus]
+
+services:
+  vllm:
+    extends: { file: common.yaml, service: vllm }
+    environment:
+      LLMTB_SCENARIO: K2
+      VLLM_SCENARIO_ARGS: "--disable-prefix-caching --enable-prompt-tokens-details"
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [backend]
+
+  litellm:
+    extends: { file: common.yaml, service: litellm }
+    environment:
+      VLLM_API_KEY: "ohne-engine-schluessel"
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [edge, backend]
+
+  postgres:
+    extends: { file: common.yaml, service: postgres }
+    networks: [backend]
+
+  tenant-setup:
+    extends: { file: common.yaml, service: tenant-setup }
+    environment:
+      LLMTB_SCENARIO: K2
+    networks: [backend]
+
+networks:
+  edge: {}
+  backend: {}
+
+volumes:
+  vllm-cache: {}
+  pgdata: {}
+
+secrets:
+  cache_salt_secret: { file: ../secrets/cache_salt_secret }

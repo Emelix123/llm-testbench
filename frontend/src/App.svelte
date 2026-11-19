@@ -10,16 +10,20 @@
   import Compare from './views/Compare.svelte'
   import Settings from './views/Settings.svelte'
   import Live from './views/Live.svelte'
+  import Matrix from './views/Matrix.svelte'
+  import { api } from './lib/api.js'
 
   const menu = [
     ['', 'Übersicht'], ['endpunkte', 'Endpunkte'], ['tests', 'Tests'], ['suiten', 'Suiten'],
-    ['ergebnisse', 'Ergebnisse'], ['vergleich', 'Vergleich'], ['einstellungen', 'Einstellungen'],
+    ['ergebnisse', 'Ergebnisse'], ['konfigurationen', 'Konfigurationen'], ['vergleich', 'Vergleich'], ['einstellungen', 'Einstellungen'],
   ]
   const views = { '': Overview, endpunkte: Endpoints, tests: Tests, suiten: Suites, ergebnisse: Results,
-    bericht: Report, vergleich: Compare, einstellungen: Settings, live: Live }
+    bericht: Report, vergleich: Compare, einstellungen: Settings, live: Live, konfigurationen: Matrix }
 
   let route = $state(parse())
   let open = $state(false)
+  let scenario = $state(null)
+  async function loadScenario() { try { scenario = await api.get('/api/scenario') } catch { scenario = null } }
   function parse() {
     const h = location.hash.replace(/^#\/?/, '')
     const [path, q] = h.split('?')
@@ -29,7 +33,9 @@
     const on = () => { route = parse(); open = false; window.scrollTo(0, 0) }
     addEventListener('hashchange', on)
     refresh()
-    return () => removeEventListener('hashchange', on)
+    loadScenario()
+    const t = setInterval(loadScenario, 15000)
+    return () => { removeEventListener('hashchange', on); clearInterval(t) }
   })
   const View = $derived(views[route.path] || Overview)
   const running = $derived(live.batch && live.batch.state === 'laeuft')
@@ -40,6 +46,7 @@
     <span></span><span></span><span></span>
   </button>
   <a class="brand" href="#/">LLM-Inferenz-Testplattform</a>
+  {#if scenario?.id}<a class="scen" href="#/konfigurationen" title={'Lokal laufendes Szenario (deploy/scenario.sh): ' + (scenario.massnahmen || '')}>Szenario {scenario.id} · {scenario.name}</a>{/if}
   <div class="grow"></div>
   {#if running}
     <a class="runpill" href="#/live"><i></i> Test läuft – {live.batch.live?.inflight ?? 0} parallel</a>
@@ -87,5 +94,7 @@
     color: var(--accent); background: var(--accent-weak); padding: .35rem .8rem; border-radius: 99px; }
   .runpill i { width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); animation: p 1.2s infinite; }
   @keyframes p { 50% { opacity: .25 } }
+  .scen { font-size: .8rem; font-weight: 600; text-decoration: none; color: var(--muted); border: 1px solid var(--line);
+    padding: .15rem .6rem; border-radius: 99px; white-space: nowrap; }
   .primary-link { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
 </style>

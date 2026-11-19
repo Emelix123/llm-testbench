@@ -1,0 +1,130 @@
+# Gemeinsame Bausteine der Szenarien. Wird von k*.yaml per `extends` eingebunden – nicht direkt starten.
+# Relative Pfade gelten relativ zu diesem Ordner (deploy/compose/).
+services:
+
+  # ------------------------------------------------------------------ Inferenz-Engine
+  vllm:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.34.0}
+    entrypoint: ["/bin/bash", "/opt/llmtb/start-vllm.sh"]
+    environment:
+      MODEL: ${MODEL:-Qwen/Qwen3-0.6B}
+      SERVED_MODEL_NAME: ${SERVED_MODEL_NAME:-llm}
+      MAX_MODEL_LEN: ${MAX_MODEL_LEN:-2048}
+      GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION:-0.78}
+      KV_CACHE_MEMORY: ${KV_CACHE_MEMORY:-}
+      HF_TOKEN: ${HF_TOKEN:-}
+      # keine Nutzungsstatistik nach außen
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface
+      - vllm-cache:/root/.cache/vllm
+      - ../vllm/start-vllm.sh:/opt/llmtb/start-vllm.sh:ro
+    # Gemeinsamer Speicher für PyTorch. Statt `ipc: host` (teilt den IPC-Namensraum des Hosts).
+    shm_size: 2gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 900s
+      start_interval: 5s
+    restart: "no"
+
+  # ------------------------------------------------------------------ Gateway
+  litellm:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm-database:v1.106.7}
+    command: ["--config", "/app/llmtb/config.yaml", "--port", "4000"]
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?./scenario.sh init ausführen}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?./scenario.sh init ausführen}
+      DATABASE_URL: postgresql://litellm:${POSTGRES_PASSWORD}@postgres:5432/litellm
+      VLLM_API_KEY: ${VLLM_API_KEY:-}
+      STORE_MODEL_IN_DB: "False"
+      LITELLM_LOCAL_MODEL_COST_MAP: "True"
+      CACHE_SALT_SECRET_FILE: /run/secrets/cache_salt_secret
+      # Mandanten-Hook: Standard = aus (Szenarien überschreiben)
+      TENANT_SALT_MODE: "off"
+      TENANT_STRIP_PARAMS: "0"
+      TENANT_MAX_N: "0"
+      TENANT_ROUTING: ""
+      TENANT_HIDE_INTERNALS: "0"
+    secrets: [cache_salt_secret]
+    volumes:
+      - ../litellm:/app/llmtb:ro
+    ports:
+      - "127.0.0.1:4000:4000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 120s
+      start_interval: 3s
+    restart: unless-stopped
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:16-alpine}
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?./scenario.sh init ausführen}
+      POSTGRES_DB: litellm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # Einmal-Container: Mandanten A/B/C mit den Grenzen des Szenarios anlegen
+  tenant-setup:
+    image: ${LITELLM_IMAGE:-ghcr.io/berriai/litellm-database:v1.106.7}
+    entrypoint: ["python3", "/app/llmtb/bootstrap_tenants.py"]
+    environment:
+      LITELLM_URL: http://litellm:4000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      TENANT_A_KEY: ${TENANT_A_KEY:?./scenario.sh init ausführen}
+      TENANT_B_KEY: ${TENANT_B_KEY:?./scenario.sh init ausführen}
+      TENANT_C_KEY: ${TENANT_C_KEY:?./scenario.sh init ausführen}
+      TENANT_RPM: "0"
+      TENANT_TPM: "0"
+      TENANT_MAX_PARALLEL: "0"
+      TENANT_ALLOWED_ROUTES: ""
+    volumes:
+      - ../litellm:/app/llmtb:ro
+    profiles: [setup]
+    restart: "no"
+
+  # Wasserzeichen-Detektor (nur Betreiber; CPU genügt)
+  wm-detector:
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.34.0}
+    entrypoint: ["python3", "/opt/llmtb/detector_server.py"]
+    environment:
+      MODEL: ${MODEL:-Qwen/Qwen3-0.6B}
+      HF_HUB_OFFLINE: "1"
+      CUDA_VISIBLE_DEVICES: ""
+      WATERMARK_KEY_FILE: /run/secrets/watermark_key
+      WATERMARK_CONTEXT_WIDTH: "4"
+    secrets: [watermark_key]
+    volumes:
+      - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface:ro
+      - ../watermark:/opt/llmtb:ro
+    ports:
+      - "127.0.0.1:8090:8090"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+      start_interval: 5s
+    restart: unless-stopped

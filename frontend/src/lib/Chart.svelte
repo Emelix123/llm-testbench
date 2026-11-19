@@ -15,6 +15,24 @@
       axisLabel: { color: fg, formatter: (v) => v.toLocaleString('de-DE') }, nameTextStyle: { color: fg },
       splitLine: { lineStyle: { color: grid } }, axisLine: { lineStyle: { color: grid } }, scale: true,
     })
+    if (s.type === 'bar') {
+      // Kategorien auf der x-Achse (z. B. Konfigurationen), je Serie ein Balken
+      return {
+        color: palette, animation: false,
+        tooltip: { trigger: 'axis', valueFormatter: (v) => (typeof v === 'number' ? v.toLocaleString('de-DE') : v) },
+        legend: { top: 0, textStyle: { color: fg } },
+        grid: { left: 64, right: 64, top: 40, bottom: 64 },
+        xAxis: { type: 'category', data: s.categories, axisLabel: { color: fg, interval: 0, rotate: s.categories.length > 5 ? 20 : 0 },
+                 axisLine: { lineStyle: { color: grid } } },
+        yAxis: { ...axis(s.y), scale: false, nameGap: 48 },
+        series: s.series.map((x, i) => ({
+          name: x.name, type: 'bar', data: x.data, color: palette[i % palette.length],
+          label: { show: !!s.labels, position: 'top', color: fg, formatter: (p) => (p.value == null ? '' : p.value.toLocaleString('de-DE') + (s.labelSuffix || '')) },
+          ...(i === 0 && s.markLines?.length ? { markLine: { symbol: 'none', silent: true, lineStyle: { color: '#64748b', type: 'dashed' },
+            label: { formatter: '{b}', color: fg }, data: s.markLines.map((m) => ({ yAxis: m.y, name: m.name })) } } : {}),
+        })),
+      }
+    }
     const series = s.series.map((x, i) => ({
       name: x.name, type: s.type === 'scatter' ? 'scatter' : 'line', data: x.data.filter((d) => d[0] != null && d[1] != null),
       showSymbol: true, symbolSize: 6, smooth: false,

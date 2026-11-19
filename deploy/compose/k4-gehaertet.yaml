@@ -1,0 +1,136 @@
+# K4 – Voll gehärtet: Best Practices der vLLM-Security-Doku (v0.34) + Maßnahmen der Arbeit
+#
+# Engine (vLLM)
+#   * nur im internen Netz (internal: true, kein Port nach außen, kein Internet → kein Nachladen,
+#     keine Exfiltration nach einer Codeausführung wie CVE-2026-22778); Modell vorab laden
+#   * --api-key über VLLM_API_KEY (schützt nur /v1, /v2, /inference, /cohere – daher zusätzlich Netztrennung)
+#   * Prefix-Caching AN, aber Trennung über cache_salt je Mandant (Gateway-Hook)
+#   * --prefix-caching-hash-algo sha256 (kein xxhash; Kollisionen CVE-2025-25183/-46722)
+#   * kein cached_tokens-Orakel (--disable-prompt-tokens-details)
+#   * --language-model-only: keine Bild/Video/Audio-Eingaben (Angriffsfläche Video-RCE, SSRF)
+#   * --disable-prompt-embeds (CVE-2026-55514), kein spekulatives Decoding (CVE-2026-54234)
+#   * keine Dev-/Profiler-/Tokenizer-Info-Endpunkte, keine OpenAPI-Doku, kein Request-Logging
+#   * VLLM_MAX_N_SEQUENCES=64, --max-num-seqs 32, --max-num-queued-reqs 64 (begrenzte Warteschlange)
+#   * keine Plugins, kein LoRA-Nachladen zur Laufzeit, keine Telemetrie
+#   * Wasserzeichen (KI-VO Art. 50) erzwungen, Schlüssel als Docker-Secret
+#   * Container: vLLM/Detektor ohne root, alle Capabilities entfernt, no-new-privileges, Prozessgrenzen
+# Gateway (LiteLLM)
+#   * cache_salt je Mandant, gefährliche Felder entfernen, n <= 16 je Anfrage, interne Adressen in
+#     Antwort-Headern überschreiben (x-litellm-model-api-base)
+#   * Grenzen je Mandant: 8 parallel, 600/min
+#   * Routen-Allowlist je Key: nur Chat/Completions/Models – sperrt u. a. die /vllm/*-Durchreichung,
+#     über die ein Mandant sonst Betriebsendpunkte der Engine (/pause, /metrics …) erreicht
+#
+# Erwartung: alle Sicherheitstests GRÜN; Leistungskosten = Summe aus Wasserzeichen + Grenzen.
+name: llmtb
+
+x-scenario:
+  id: K4
+  name: Voll gehärtet
+  massnahmen: [cache_salt, ratenlimit, n_grenze, netztrennung, engine_auth, routen_allowlist, kein_orakel, feature_flags_aus, wasserzeichen, container_haertung]
+
+services:
+  vllm:
+    extends: { file: common.yaml, service: vllm }
+    environment:
+      LLMTB_SCENARIO: K4
+      VLLM_API_KEY: ${VLLM_API_KEY:?./scenario.sh init ausführen}
+      VLLM_SCENARIO_ARGS: >-
+        --prefix-caching-hash-algo sha256
+        --disable-prompt-tokens-details
+        --language-model-only
+        --disable-prompt-embeds
+        --no-trust-remote-code
+        --no-trust-request-chat-template
+        --no-trust-request-mm-kwargs
+        --disable-tokenizer-info-endpoint
+        --disable-fastapi-docs
+        --disable-log-requests
+        --max-num-seqs 32
+        --max-num-queued-reqs 64
+      VLLM_MAX_N_SEQUENCES: "64"
+      VLLM_SERVER_DEV_MODE: "0"
+      VLLM_ALLOW_RUNTIME_LORA_UPDATING: "False"
+      VLLM_PLUGINS: ""
+      VLLM_MEDIA_URL_ALLOW_REDIRECTS: "0"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      WATERMARK_KEY_FILE: /run/secrets/watermark_key
+      WATERMARK_ENFORCE: "true"
+      # ohne root: eigenes HOME (tmpfs), Modell-Cache nur lesend unter /hf
+      HOME: /home/vllm
+      HF_HOME: /hf
+      VLLM_CACHE_ROOT: /home/vllm/.cache/vllm
+    # Nicht-root (= Eigentümer von deploy/secrets/*). Docker bindet Datei-Secrets mit den Rechten des
+    # Hosts ein (uid/mode werden ignoriert); ohne Capabilities darf root sie sonst nicht lesen.
+    user: "${LLMTB_UID:-1000}:${LLMTB_GID:-1000}"
+    secrets: [watermark_key]
+    volumes:
+      - ${HF_CACHE:-~/.cache/huggingface}:/root/.cache/huggingface:ro
+      - ${HF_CACHE:-~/.cache/huggingface}:/hf:ro
+    tmpfs:
+      # exec: Triton/Inductor laden dort kompilierte Kernel (.so)
+      - /home/vllm:uid=${LLMTB_UID:-1000},gid=${LLMTB_GID:-1000},mode=0700,size=2g,exec
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 8192
+    networks: [backend]
+
+  litellm:
+    extends: { file: common.yaml, service: litellm }
+    environment:
+      VLLM_API_KEY: ${VLLM_API_KEY:?./scenario.sh init ausführen}
+      TENANT_SALT_MODE: per_tenant
+      TENANT_STRIP_PARAMS: "1"
+      TENANT_MAX_N: "16"
+      TENANT_HIDE_INTERNALS: "1"
+    depends_on:
+      postgres: { condition: service_healthy }
+    # Das LiteLLM-Image läuft als root (Prisma-Migrationen); alle Capabilities weg bis auf
+    # DAC_READ_SEARCH, damit das Secret (Modus 600, Eigentümer = Host-Nutzer) lesbar bleibt.
+    cap_drop: [ALL]
+    cap_add: [DAC_READ_SEARCH]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 2048
+    mem_limit: 3g
+    networks: [edge, backend]
+
+  postgres:
+    extends: { file: common.yaml, service: postgres }
+    security_opt: ["no-new-privileges:true"]
+    networks: [backend]
+
+  tenant-setup:
+    extends: { file: common.yaml, service: tenant-setup }
+    environment:
+      LLMTB_SCENARIO: K4
+      TENANT_MAX_PARALLEL: "8"
+      TENANT_RPM: "600"
+      TENANT_ALLOWED_ROUTES: "/v1/chat/completions,/chat/completions,/v1/completions,/completions,/v1/models,/models,/key/info"
+    networks: [backend]
+
+  wm-detector:
+    extends: { file: common.yaml, service: wm-detector }
+    user: "${LLMTB_UID:-1000}:${LLMTB_GID:-1000}"
+    environment:
+      HOME: /tmp
+      HF_HOME: /hf
+    volumes:
+      - ${HF_CACHE:-~/.cache/huggingface}:/hf:ro
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    networks: [ops]
+
+networks:
+  edge: {}
+  backend:
+    internal: true
+  ops: {}
+
+volumes:
+  vllm-cache: {}
+  pgdata: {}
+
+secrets:
+  cache_salt_secret: { file: ../secrets/cache_salt_secret }
+  watermark_key: { file: ../secrets/watermark_key }

@@ -1,0 +1,50 @@
+{
+  "id": "isolation_overhead",
+  "order": 395,
+  "name": "Leistungskosten der Isolation (Konfigurationsvergleich)",
+  "category": "Sicherheit (Mandantentrennung)",
+  "description": "Einheitliche Mehrmandanten-Last für den Vergleich der Konfigurationen K0–K6: Mehrere Mandanten (eigene API-Keys) senden Chats mit einem gemeinsamen System-Prompt (z. B. Firmenvorlage), einem eigenen System-Prompt je Mandant und einer eindeutigen Frage. Gemessen je Laststufe: TTFT, TPOT, Ende-zu-Ende, Durchsatz, Cache-Trefferquote und Ablehnungen. In K0 teilen alle Mandanten den gemeinsamen Präfix im Cache, mit cache_salt je Mandant nur noch innerhalb eines Mandanten, ohne Prefix-Caching gar nicht – genau dieser Unterschied ist der Leistungsverlust der Isolation. Ergebnis erscheint im Konfigurationsvergleich (Δ % gegenüber K0).",
+  "estimated_duration_s": 220,
+  "params": [
+    {"key": "levels", "label": "Laststufen (parallele Anfragen gesamt, auf die Mandanten verteilt)", "type": "int_list", "default": [1, 3, 6, 12]},
+    {"key": "duration_s", "label": "Dauer je Laststufe (s)", "type": "int", "default": 40},
+    {"key": "reference_level", "label": "Bezugs-Laststufe für den Vergleich", "type": "int", "default": 6},
+    {"key": "tenants", "label": "Mandanten (1–3; nutzt Haupt-, Angreifer- und Last-Key des Profils)", "type": "int", "default": 3},
+    {"key": "shared_prefix_tokens", "label": "Gemeinsamer System-Prompt aller Mandanten (Tokens)", "type": "int", "default": 512},
+    {"key": "tenant_prefix_tokens", "label": "System-Prompt je Mandant (Tokens)", "type": "int", "default": 256},
+    {"key": "user_tokens", "label": "Eindeutige Nutzerfrage (Tokens)", "type": "int", "default": 64},
+    {"key": "output_tokens", "label": "Output-Tokens je Anfrage", "type": "int", "default": 128},
+    {"key": "temperature", "label": "temperature (> 0, sonst kein Wasserzeichen)", "type": "float", "default": 0.7},
+    {"key": "seed", "label": "Seed (leer = zufällig)", "type": "int", "default": null}
+  ],
+  "explain": {
+    "kurz": "Jede Schutzmaßnahme kostet etwas Leistung. Dieser Test misst unter immer gleicher Last, wie viel – damit sich Sicherheit und Leistung der Konfigurationen K0–K6 direkt vergleichen lassen.",
+    "cve": "Leistungsmetriken TTFT/TPOT (Arbeit, Abschn. 1.2.2)",
+    "ablauf": [
+      {"rolle": "system", "text": "Alle Mandanten nutzen dieselbe Firmenvorlage als System-Prompt (gemeinsamer Präfix), dazu einen eigenen Mandanten-Prompt."},
+      {"rolle": "opfer", "text": "Drei Mandanten (eigene API-Keys) senden gleichzeitig Chats mit eindeutiger Frage – stufenweise mehr parallel."},
+      {"rolle": "system", "text": "K0: Der gemeinsame Präfix wird mandantenübergreifend aus dem Cache bedient. K1 (cache_salt): nur noch innerhalb eines Mandanten. K2: gar nicht."},
+      {"rolle": "system", "text": "Gemessen werden TTFT, TPOT, Durchsatz und Cache-Treffer. Der Konfigurationsvergleich rechnet die Differenz zu K0 in Prozent aus."}
+    ],
+    "signal": "TTFT (Prefill + Warteschlange), TPOT (Decode), Output-Tokens/s, cached_tokens/prompt_tokens, Ablehnungen (429/503).",
+    "mass": "Δ % gegenüber der Referenzkonfiguration (K0) bei der Bezugs-Laststufe.",
+    "verwundbar": "Kein Sicherheitsurteil – Ampel nur für Fehler/Zielwerte.",
+    "geloest": "Gute Konfiguration: Sicherheitstests grün UND geringer Leistungsverlust gegenüber K0.",
+    "quellen": [
+      {"ref": "Zhong u. a., DistServe", "text": "TTFT und TPOT als getrennte Latenzziele von Prefill und Decode.", "url": "https://arxiv.org/abs/2401.09670"},
+      {"ref": "vLLM Automatic Prefix Caching", "text": "Blöcke werden über Hash aus Präfix, Tokens und Zusatzdaten (cache_salt) erkannt.", "url": "https://docs.vllm.ai/en/stable/design/prefix_caching.html"}
+    ]
+  },
+  "settings": {
+    "vllm": [
+      {"name": "--enable-prefix-caching / --disable-prefix-caching", "wirkung": "K2 schaltet den Cache ab – höchste TTFT bei gemeinsamem System-Prompt."},
+      {"name": "--kv-cache-memory", "wirkung": "Feste KV-Cache-Größe in allen Szenarien – Voraussetzung für vergleichbare Messungen."},
+      {"name": "--watermark-config", "wirkung": "K4/K6: Wasserzeichen beim Sampling – Kosten in TPOT/Durchsatz sichtbar."},
+      {"name": "--prefix-caching-hash-algo", "wirkung": "sha256 (Standard, sicher) vs. xxhash (schneller, laut Doku zu vermeiden)."}
+    ],
+    "litellm": [
+      {"name": "Mandanten-Hook (cache_salt je Team)", "wirkung": "K1/K4: Cache nur noch je Mandant – Verlust nur beim mandantenübergreifend gleichen Präfix."},
+      {"name": "Key: max_parallel_requests, rpm_limit", "wirkung": "K3/K4: begrenzt je Mandant; über der Grenze 429 statt Warteschlange."}
+    ]
+  }
+}
