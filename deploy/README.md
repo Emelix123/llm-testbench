@@ -18,7 +18,7 @@ Dasselbe im Terminal:
 cd deploy
 ./scenario.sh check       # Systemprüfung (Docker, GPU, Images, Modell, Einrichtung)
 ./scenario.sh init        # .env, Geheimnisse (secrets/), GPU-Werte, Endpunkt-Profile – einmalig
-./scenario.sh pull        # Images (~40 GB) + Modell – einmalig
+./scenario.sh pull        # Images (~40 GB) + Modell (Qwen3-8B ~16 GB) – einmalig
 ./scenario.sh run-all -n 3   # Gesamtlauf: alle passenden Szenarien, je 3 Messungen, Export nach data/exports/
 ```
 
@@ -60,7 +60,7 @@ Jedes Szenario = K0 + genau die genannte(n) Maßnahme(n) (Ablationsstudie). K4 k
 | **K2** | `k2-ohne-prefix-cache.yaml` | `--disable-prefix-caching` | wie K1 + Cache-Kollisionen | Seitenkanal **grün**, TTFT deutlich schlechter |
 | **K3** | `k3-ratenlimit.yaml` | je Mandant max. 8 parallel / 600 pro min, n ≤ 16 im Gateway, `VLLM_MAX_N_SEQUENCES=64` | Ressourcenverdrängung (CVE-2026-34756) | S_N kleiner, Jain-Index höher, 429 für den Störnachbarn |
 | **K4** | `k4-gehaertet.yaml` | alles: K1 + K3 + Netztrennung, Engine-API-Key, Routen-Allowlist, kein `cached_tokens`, Feature-Flags aus, Wasserzeichen, Container-Härtung | alle Engine-Angriffe (Fokus „ja“) | alle Sicherheitstests **grün** |
-| **K5** | `k5-dediziert.yaml` | dedizierte vLLM-Instanz je Mandant auf derselben GPU | Seitenkanal, Absturz trifft nur eigene Instanz | Seitenkanal grün, S_N > 1 nur über GPU-Rechenzeit. **Braucht ≥ 8 GB VRAM** |
+| **K5** | `k5-dediziert.yaml` | dedizierte vLLM-Instanz je Mandant auf derselben GPU | Seitenkanal, Absturz trifft nur eigene Instanz | Seitenkanal grün, S_N > 1 nur über GPU-Rechenzeit. **Braucht ≥ 44 GB VRAM mit Qwen3-8B** (≥ 8 GB mit Qwen3-0.6B) |
 | **K6** | `k6-wasserzeichen.yaml` | Gumbel-Wasserzeichen (`enforce=true`) + Detektor | KI-VO Art. 50 Abs. 2 | Erkennung ab 200 Tokens, Leistungskosten K6 vs. K0 |
 
 ### K4 im Detail (Best Practices aus der vLLM-Doku)
@@ -87,8 +87,13 @@ Jedes Szenario = K0 + genau die genannte(n) Maßnahme(n) (Ablationsstudie). K4 k
 ## Feste Rahmenbedingungen (Vergleichbarkeit)
 
 - Images gepinnt: `vllm/vllm-openai:v0.34.0`, `ghcr.io/berriai/litellm-database:v1.106.7`.
-- **Feste KV-Cache-Größe** (`KV_CACHE_MEMORY=750000000` ≈ 6 500 Tokens bei Qwen3-0.6B) in allen Szenarien –
-  sonst hinge die Kapazität davon ab, was Windows gerade an GPU-Speicher belegt.
+- **Modellprofil** (`MODELL_PROFIL`, wählt `init` nach VRAM, wechseln mit `./scenario.sh modell`):
+  `standard` = `Qwen/Qwen3-8B` ab ~44 GB VRAM (alle Szenarien einschließlich K5), `klein` = `Qwen/Qwen3-0.6B`
+  für den Laptop. Beide nutzen denselben Tokenizer – die Prompts sind Token für Token gleich.
+- **Feste KV-Cache-Größe** in allen Szenarien, je Profil so gewählt, dass sie ≈ 6 540 Tokens fasst
+  (`KV_CACHE_MEMORY`: Qwen3-8B 965 MB, Qwen3-0.6B 750 MB; K5 je Instanz ≈ 4 360 Tokens) – sonst hinge die
+  Kapazität davon ab, was gerade an GPU-Speicher frei ist. Die tatsächliche Größe steht nach jedem
+  Gesamtlauf in `szenario-konfiguration.md`.
 - vLLM 0.34 nutzt standardmäßig **64 Tokens je KV-Block** (`CacheConfig.DEFAULT_BLOCK_SIZE`), nicht 16 wie im
   vLLM-Paper 2023. Treffer im Prefix-Cache entstehen erst ab einem vollen Block.
 - `--enable-prompt-tokens-details` ist in K0–K3/K5/K6 als **Messhilfe** an (liefert `cached_tokens`), in K4 aus.
@@ -107,7 +112,8 @@ Jedes Szenario = K0 + genau die genannte(n) Maßnahme(n) (Ablationsstudie). K4 k
    Zeitmessung). Abhilfe: `allowed_routes` je Key (K4).
 4. **Interne Adresse im Header:** LiteLLM liefert `x-litellm-model-api-base: http://vllm:8000/v1` an Mandanten aus,
    `/model/info` zeigt sie ebenfalls.
-5. Die Testplattform misst: K0 Prefix-Seitenkanal AUC 1,00 (TTFT 44 ms Treffer / 85 ms Fehlschlag bei 512 Tokens).
+5. Die Testplattform misst: K0 Prefix-Seitenkanal AUC 1,00 (TTFT 44 ms Treffer / 85 ms Fehlschlag bei 512 Tokens;
+   Laptop, RTX 3050 Ti, Qwen3-0.6B – nicht mit Messungen auf dem Server vergleichbar).
 
 ## Dateien
 
@@ -130,7 +136,12 @@ deploy/
 
 ## Grenzen auf dem Laptop (RTX 3050, 4 GB, WSL)
 
+- Profil `klein` (Qwen3-0.6B) – `init` wählt es auf kleinen GPUs automatisch.
 - **K5** passt nicht in 4 GB (zwei Modellkopien + Aktivierungen). Für die Zielhardware gedacht.
 - **MIG, MPS-Isolation, ECC** gibt es auf GeForce-GPUs und unter WSL nicht – GPU-Ebene (Angreifertyp A2) ist hier
   nicht messbar, nur die Engine- und Gateway-Ebene.
 - Zeitmessungen unter WSL haben mehr Rauschen als auf Bare Metal (siehe `../docs/WSL-SETUP.md`).
+
+Auf der RTX PRO 6000 Blackwell gibt es dagegen **MIG** (bis zu 4 Instanzen laut NVIDIA MIG User Guide; auf
+den Workstation-Karten erst nach Umschalten in den Compute-Modus). Ein MIG-Szenario ist nicht eingebaut – K5
+trennt nur auf Engine-Ebene, die GPU-Rechenwerke teilen sich beide Instanzen weiterhin.

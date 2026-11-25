@@ -15,7 +15,8 @@ Die Kosten zeigen sich an zwei anderen Stellen:
 2. Viele Mandanten. N Mandanten (1 … 30; Haupt-, Angreifer-, Last-Key und die Pool-Mandanten aus
    ./scenario.sh init) senden abwechselnd Chats mit derselben Vorlage, immer gleich viele parallel.
    Mit Salt liegt die Vorlage N-mal im KV-Cache. Der ist in allen Szenarien gleich groß
-   (KV_CACHE_MEMORY = 750 MB ≈ 6 500 Tokens bei Qwen3-0.6B). Solange N × Vorlage hineinpasst,
+   (KV_CACHE_MEMORY ≈ 6 500 Tokens: 965 MB bei Qwen3-8B, 750 MB bei Qwen3-0.6B – siehe Modellprofile in
+   deploy/scenario.sh). Solange N × Vorlage hineinpasst,
    kostet der Salt kaum etwas; darüber verdrängen sich die Kopien, Treffer fallen, TTFT steigt und
    der Durchsatz sinkt. Ohne Salt (K0) bleibt alles wie bei einem Mandanten.
 

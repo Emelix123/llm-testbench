@@ -109,7 +109,7 @@
   </div>
   <div class="stack">
     <div><b>Images & Modell laden</b> {#if check && !check.images_missing?.length && check.model_cached}<span class="c-ok">✔ vorhanden</span>{/if}</div>
-    <div class="small muted">vLLM (~36 GB), LiteLLM, Postgres und das Modell (~1,5 GB). Einmalig; je nach Leitung 10–30 min.
+    <div class="small muted">vLLM (~36 GB), LiteLLM, Postgres und das Modell (Qwen3-8B ~16 GB; auf kleinen GPUs Qwen3-0.6B ~1,5 GB). Einmalig; je nach Leitung 10–30 min.
       {#if check?.images_missing?.length}<br />Fehlt: {check.images_missing.join(', ')}{/if}</div>
     <div><button onclick={() => act('pull')} disabled={locked}>Images & Modell laden</button></div>
   </div>

@@ -49,13 +49,14 @@ cd llm-testbench
 <div class="panel stack">
   <ol>
     <li><b>Einrichten</b> – erzeugt Schlüssel und Passwörter (<code>deploy/.env</code>, <code>deploy/secrets/</code>, nie im Git),
-      passt die GPU-Speicherwerte an die GPU an und legt die Endpunkt-Profile mit den Keys der drei Mandanten an
+      wählt nach dem Grafikspeicher das Modell (ab ~44 GB Qwen3-8B, sonst Qwen3-0.6B; wechseln mit
+      <code>./deploy/scenario.sh modell standard|klein</code>), passt die GPU-Speicherwerte an und legt die Endpunkt-Profile mit den Keys der drei Mandanten an
       (A = Opfer, B = Angreifer, C = Last).</li>
-    <li><b>Images & Modell laden</b> – rund 40 GB (vLLM allein 36 GB). Die Ausgabe zeigt den Fortschritt; danach erneut prüfen.</li>
+    <li><b>Images & Modell laden</b> – rund 40 GB Images (vLLM allein 36 GB) plus das Modell (Qwen3-8B ~16 GB). Die Ausgabe zeigt den Fortschritt; danach erneut prüfen.</li>
   </ol>
-  <div class="small muted">Der KV-Cache ist in allen Szenarien fest (<code>KV_CACHE_MEMORY</code> in <code>deploy/.env</code>), damit Messungen
-    auf Laptop und Server vergleichbar bleiben. Wer die ganze GPU nutzen will, setzt den Wert dort leer – dann sind die Ergebnisse
-    aber nicht mehr mit anderen Rechnern vergleichbar.</div>
+  <div class="small muted">Der KV-Cache ist in allen Szenarien fest (<code>KV_CACHE_MEMORY</code> in <code>deploy/.env</code>, ≈ 6 540 Tokens
+    bei beiden Modellen), damit die Szenarien untereinander vergleichbar bleiben. Wer die ganze GPU nutzen will, setzt den Wert
+    dort leer – dann sind die Ergebnisse aber nicht mehr mit anderen Rechnern vergleichbar.</div>
 </div>
 
 <h2>3 · Messen</h2>

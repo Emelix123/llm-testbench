@@ -24,7 +24,7 @@
       {"rolle": "angreifer", "text": "Ein zweiter Mandant sendet dieselbe Vorlage mit eigener Frage. Ohne Salt: Treffer aus dem Cache von A. Mit Salt: voller Prefill."},
       {"rolle": "angreifer", "text": "Derselbe Mandant noch einmal: jetzt aus dem eigenen Cache. Die Differenz ist der Kaltstart-Aufschlag je neuem Mandanten."},
       {"rolle": "system", "text": "Viele Mandanten: 1, 3, 10, 30 Mandanten senden abwechselnd mit derselben Vorlage, immer 6 Anfragen gleichzeitig."},
-      {"rolle": "system", "text": "Mit Salt liegt die Vorlage N-mal im KV-Cache (fest 750 MB ≈ 6 500 Tokens). Passt das nicht mehr, verdrängen sich die Kopien – Treffer fallen, TTFT steigt, Durchsatz sinkt."}
+      {"rolle": "system", "text": "Mit Salt liegt die Vorlage N-mal im KV-Cache (fest ≈ 6 500 Tokens: Qwen3-8B 965 MB, Qwen3-0.6B 750 MB). Passt das nicht mehr, verdrängen sich die Kopien – Treffer fallen, TTFT steigt, Durchsatz sinkt."}
     ],
     "signal": "TTFT der ersten Anfrage eines neuen Mandanten, cached_tokens/prompt_tokens, TTFT und Output-Tokens/s je Mandantenzahl.",
     "mass": "Kaltstart-Aufschlag in ms; Cache-Treffer, TTFT und Durchsatz bei der größten Mandantenzahl; Kosten je 1 Mio. Output-Tokens (Seite „Konfigurationen“, Δ % zu K0).",
