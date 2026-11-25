@@ -22,12 +22,14 @@ services:
       - ../vllm/start-vllm.sh:/opt/llmtb/start-vllm.sh:ro
     # Gemeinsamer Speicher für PyTorch. Statt `ipc: host` (teilt den IPC-Namensraum des Hosts).
     shm_size: 2gb
+    # Genau eine GPU: LLMTB_GPU aus deploy/.env (Index aus nvidia-smi oder UUID; wählt init, ändern mit
+    # ./scenario.sh gpu <Index>). In K5 laufen beide Instanzen auf dieser GPU.
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ["${LLMTB_GPU:-0}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]

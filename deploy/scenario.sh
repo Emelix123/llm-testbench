@@ -10,7 +10,8 @@
 #                                 Gesamtlauf: jedes Szenario starten, Suite messen, nächstes; am Ende Export
 #                                 nach data/exports/ (startet die Testplattform bei Bedarf im Hintergrund)
 #   ./scenario.sh run-all --status | --abbrechen
-#   ./scenario.sh gpu             GPU-Werte in deploy/.env neu aus dem VRAM berechnen
+#   ./scenario.sh gpu [index]     GPU-Werte neu berechnen; mit Index/UUID: GPU wechseln, auf der vLLM rechnet
+#                                 (bei mehreren GPUs wählt init die mit dem meisten Speicher, ohne Monitor)
 #   ./scenario.sh modell [name]   Modellprofil anzeigen oder wechseln: standard (Qwen3-8B, ab ~44 GB VRAM,
 #                                 wählt init automatisch) oder klein (Qwen3-0.6B, Laptop)
 #   ./scenario.sh list            Szenarien anzeigen
@@ -50,7 +51,48 @@ compose() { docker compose -p "$PROJECT" --env-file .env -f "$@"; }
 need_env() { [[ -f .env && -f secrets/cache_salt_secret && -f secrets/watermark_key ]] || die "zuerst ./scenario.sh init"; }
 envval() { local f=.env; [[ -f $f ]] || f=.env.example; grep -E "^$1=" "$f" | head -1 | cut -d= -f2-; }
 setenv() { if grep -qE "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi; }
-gpu_vram_mb() { nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | sort -n | tail -1; }
+# ------------------------------------------------------------------ GPU-Auswahl
+# vLLM rechnet auf genau einer GPU: LLMTB_GPU in deploy/.env (Index aus nvidia-smi oder UUID).
+selected_gpu() { local g; g=$(envval LLMTB_GPU 2>/dev/null || true); echo "${g:-0}"; }
+gpu_vram_mb() { nvidia-smi -i "$(selected_gpu)" --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | head -1; }
+# eine Zeile je GPU: Index, UUID, Name, Speicher (MB), Monitor angeschlossen (Enabled/Disabled)
+gpu_list() {
+  nvidia-smi --query-gpu=index,uuid,name,memory.total,display_active --format=csv,noheader,nounits 2>/dev/null \
+    || nvidia-smi --query-gpu=index,uuid,name,memory.total --format=csv,noheader,nounits 2>/dev/null
+}
+
+show_gpus() {
+  local list sel; list=$(gpu_list || true); sel=$(selected_gpu)
+  [[ -n "$list" ]] || return 0
+  local n; n=$(grep -c . <<< "$list" || true)
+  local idx uuid name mem disp mark
+  (( n > 1 )) && echo "GPUs (→ = genutzt):"
+  while IFS=',' read -r idx uuid name mem disp; do
+    idx=${idx// /}; uuid=${uuid// /}; mem=${mem// /}; disp=${disp// /}; name=$(echo $name)
+    mark="  "; [[ "$sel" == "$idx" || "$sel" == "$uuid" ]] && mark="→ "
+    if (( n > 1 )); then
+      printf "  %s%s  %-48s %3d GB%s\n" "$mark" "$idx" "$name" $(( (mem + 1023) / 1024 )) \
+        "$([[ "$disp" == Enabled ]] && echo '  (Monitor angeschlossen)')"
+    fi
+    if [[ "$mark" == "→ " && "$disp" == Enabled ]]; then
+      echo "Hinweis: An GPU $idx hängt ein Monitor. Die Bildschirmausgabe stört die Zeitmessungen – Monitor an eine"
+      echo "         andere GPU anschließen oder eine GPU ohne Monitor wählen (./scenario.sh gpu <Index>)."
+    fi
+  done <<< "$list"
+  (( n > 1 )) && echo "Ändern: ./scenario.sh gpu <Index>"
+  return 0
+}
+
+# init: bei mehreren GPUs die mit dem meisten Speicher, bei Gleichstand ohne Monitor, dann kleinster Index
+choose_gpu() {
+  local list; list=$(gpu_list || true)
+  [[ -n "$list" ]] || return 0
+  local best
+  best=$(awk -F',' '{gsub(/ /,"",$1); gsub(/ /,"",$2); gsub(/ /,"",$4); gsub(/ /,"",$5);
+                     print $4, ($5 == "Enabled" ? 0 : 1), $1, $2}' <<< "$list" \
+         | sort -k1,1nr -k2,2nr -k3,3n | head -1 | awk '{print $4}')
+  [[ -n "$best" ]] && setenv LLMTB_GPU "$best"
+}
 
 # ------------------------------------------------------------------ Modellprofile
 # Ein Profil legt Modell, KV-Cache und Speicherbedarf fest. Der KV-Cache steht in Bytes, ist aber so
@@ -135,6 +177,7 @@ cmd_init() {
     sed -i "s|^LLMTB_UID=.*|LLMTB_UID=$(id -u)|; s|^LLMTB_GID=.*|LLMTB_GID=$(id -g)|" .env
     chmod 600 .env
     echo "deploy/.env angelegt (chmod 600)."
+    choose_gpu
     choose_model_profile
     cmd_gpu
     if docker volume inspect "${PROJECT}_pgdata" >/dev/null 2>&1; then
@@ -166,12 +209,23 @@ cmd_init() {
 # Szenarien untereinander vergleichbar. Angepasst wird nur die Obergrenze, die vLLM beim Start gegen den
 # freien Speicher prüft: MODEL_GPU_MB je Instanz (Qwen3-8B ~24 GB, Qwen3-0.6B ~5 GB); auf kleinen GPUs
 # höchstens 0,78 (WSL). Ältere .env ohne Modellprofil: Werte von Qwen3-0.6B.
+# Mit Argument (Index oder UUID) wird zuerst die GPU gewechselt, auf der vLLM rechnet (LLMTB_GPU).
 cmd_gpu() {
   [[ -f .env ]] || die "zuerst ./scenario.sh init"
+  if [[ -n "${1:-}" ]]; then
+    [[ ! -f "$ACTIVE" ]] || die "erst das laufende Szenario stoppen (./scenario.sh down) – es rechnet noch auf der alten GPU"
+    local uuid; uuid=$(nvidia-smi -i "$1" --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -1 | tr -d ' ' || true)
+    [[ "$uuid" == GPU-* ]] || die "GPU „$1“ nicht gefunden – Index oder UUID aus nvidia-smi -L angeben"
+    setenv LLMTB_GPU "$uuid"
+  fi
   local mb; mb=$(gpu_vram_mb || true)
   if [[ -z "$mb" ]]; then
+    if gpu_list >/dev/null 2>&1; then
+      die "LLMTB_GPU=$(selected_gpu) in deploy/.env passt zu keiner GPU – ./scenario.sh gpu <Index> (Liste: nvidia-smi -L)"
+    fi
     echo "Keine NVIDIA-GPU gefunden (nvidia-smi) – GPU-Werte in deploy/.env bleiben unverändert."; return 0
   fi
+  show_gpus
   local need needmin u ud
   need=$(envval MODEL_GPU_MB || true); needmin=$(envval MODEL_GPU_MIN_MB || true)
   need=${need:-5000}; needmin=${needmin:-3800}
@@ -180,7 +234,8 @@ cmd_gpu() {
   setenv GPU_MEMORY_UTILIZATION "$u"
   setenv GPU_MEMORY_UTILIZATION_DEDICATED "$ud"
   setenv LLMTB_GPU_VRAM_MB "$mb"
-  echo "GPU: $((mb / 1024)) GB VRAM, Modell $(envval MODEL) → GPU_MEMORY_UTILIZATION=$u, je K5-Instanz $ud (KV-Cache fest: $(envval KV_CACHE_MEMORY) Bytes)."
+  local gname; gname=$(nvidia-smi -i "$(selected_gpu)" --query-gpu=index,name --format=csv,noheader 2>/dev/null | head -1 | sed 's/, / /' || true)
+  echo "GPU ${gname:-?}: $((mb / 1024)) GB VRAM, Modell $(envval MODEL) → GPU_MEMORY_UTILIZATION=$u, je K5-Instanz $ud (KV-Cache fest: $(envval KV_CACHE_MEMORY) Bytes)."
   if (( mb < needmin )); then
     echo "Achtung: $(envval MODEL) braucht ~$(gb "$needmin") GB VRAM, hier $((mb / 1024)) GB – kleineres Modell: ./scenario.sh modell klein"
   fi
@@ -446,7 +501,7 @@ case "${1:-}" in
   init) cmd_init;;
   check) shift; cmd_check "$@";;
   pull) cmd_pull;;
-  gpu) cmd_gpu;;
+  gpu) shift; cmd_gpu "${1:-}";;
   modell|model) shift; cmd_modell "${1:-}";;
   run-all) shift; cmd_run_all "$@";;
   list) cmd_list;;

@@ -121,13 +121,29 @@ die Zusammenfassung warnt sonst.
 Neu berechnen: `./deploy/scenario.sh gpu` (oder Steuerung → Wartung) – rechnet mit dem eingestellten
 Modellprofil. Wer die ganze GPU für den
 KV-Cache nutzen will, setzt `KV_CACHE_MEMORY=` leer und `GPU_MEMORY_UTILIZATION` z. B. auf 0.85 – die
-Ergebnisse sind dann aber nicht mehr mit anderen Rechnern vergleichbar. Bei mehreren GPUs nutzt jede
-vLLM-Instanz eine GPU (`count: 1` in `deploy/compose/common.yaml`).
+Ergebnisse sind dann aber nicht mehr mit anderen Rechnern vergleichbar.
+
+### Mehrere GPUs
+
+vLLM rechnet immer auf **genau einer** GPU: `LLMTB_GPU` in `deploy/.env` (Index aus `nvidia-smi -L` oder
+UUID). `init` wählt bei mehreren GPUs die mit dem meisten Speicher, bei Gleichstand die ohne Monitor, und
+trägt ihre UUID ein (bleibt auch gleich, wenn sich die Reihenfolge der Karten ändert). In K5 laufen beide
+Instanzen auf dieser GPU.
+
+```bash
+nvidia-smi -L                     # Index und UUID aller GPUs
+./deploy/scenario.sh gpu          # Liste mit Markierung (→), Werte neu berechnen
+./deploy/scenario.sh gpu 1        # vLLM auf GPU 1 (nur bei gestopptem Szenario)
+```
+
+Für saubere Zeitmessungen: Monitor an die **andere** GPU anschließen (die Systemprüfung warnt sonst) und
+auf der Mess-GPU nichts anderes laufen lassen. Welche GPU genutzt wurde, steht in jeder `config.json`
+(`environment.vllm_gpu`) und in `umgebung.md` des Gesamtlaufs.
 
 ## Gemeinsam genutzter Server
 
 Messungen reagieren empfindlich auf fremde GPU-Last. Vor dem Gesamtlauf mit `nvidia-smi` prüfen, dass
-die GPU frei ist (die Systemprüfung zeigt den belegten Speicher). Ports 4000, 8000, 8090 und 8080
+die Mess-GPU (`LLMTB_GPU`) frei ist (die Systemprüfung zeigt den belegten Speicher). Ports 4000, 8000, 8090 und 8080
 müssen frei sein; einen anderen Port für die Oberfläche wählt `PORT=8081 ./start.sh`. Laufen mehrere
 Kopien des Repos auf einem Rechner, trennt `LLMTB_PROJECT=name` die Docker-Projekte (Volumes), die
 Ports bleiben aber gleich – also nie gleichzeitig messen.

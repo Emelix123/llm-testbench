@@ -34,7 +34,7 @@ ROOT = storage.ROOT
 DEPLOY = ROOT / "deploy"
 
 # Nur diese Werte aus deploy/.env werden übernommen – alles andere kann geheim sein.
-DEPLOY_ENV_PUBLIC = ("VLLM_IMAGE", "LITELLM_IMAGE", "POSTGRES_IMAGE", "MODELL_PROFIL", "MODEL", "SERVED_MODEL_NAME",
+DEPLOY_ENV_PUBLIC = ("VLLM_IMAGE", "LITELLM_IMAGE", "POSTGRES_IMAGE", "LLMTB_GPU", "MODELL_PROFIL", "MODEL", "SERVED_MODEL_NAME",
                      "MAX_MODEL_LEN", "KV_CACHE_MEMORY", "GPU_MEMORY_UTILIZATION", "KV_CACHE_MEMORY_DEDICATED",
                      "GPU_MEMORY_UTILIZATION_DEDICATED", "MODEL_GPU_MB", "MODEL_GPU_MIN_MB", "TENANT_POOL_SIZE",
                      "LLMTB_GPU_VRAM_MB")
@@ -47,8 +47,8 @@ CODE_GLOBS = ("backend/app/*.py", "backend/requirements.txt", "tests/*/*.py", "t
 GPU_FIELDS_FULL = ("index", "name", "uuid", "pci.bus_id", "compute_cap", "memory.total", "memory.used",
                    "utilization.gpu", "temperature.gpu", "power.draw", "power.limit", "power.default_limit",
                    "power.max_limit", "clocks.sm", "clocks.max.sm", "clocks.mem", "clocks.max.mem",
-                   "driver_version", "vbios_version", "persistence_mode", "mig.mode.current")
-GPU_FIELDS_MIN = ("index", "name", "memory.total", "memory.used", "utilization.gpu", "temperature.gpu",
+                   "driver_version", "vbios_version", "persistence_mode", "mig.mode.current", "display_active")
+GPU_FIELDS_MIN = ("index", "uuid", "name", "memory.total", "memory.used", "utilization.gpu", "temperature.gpu",
                   "power.draw", "power.limit", "driver_version")
 
 
@@ -66,7 +66,7 @@ def _run(cmd: list[str], timeout: float = 10.0) -> tuple[int, str]:
 
 # Versionsartige Felder bleiben Text („12.0“ ist keine Zahl 12)
 _TEXT_FIELDS = {"name", "uuid", "pci.bus_id", "compute_cap", "driver_version", "vbios_version",
-                "persistence_mode", "mig.mode.current"}
+                "persistence_mode", "mig.mode.current", "display_active"}
 
 
 def _num(v: str, field: str = "") -> Any:
@@ -108,16 +108,26 @@ def cuda_driver_version() -> str | None:
 
 def gpu_processes() -> list[dict]:
     """Prozesse, die gerade GPU-Speicher belegen (fremde Last verfälscht Zeitmessungen)."""
-    code, out = _run(["nvidia-smi", "--query-compute-apps=pid,process_name,used_memory",
+    code, out = _run(["nvidia-smi", "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
                       "--format=csv,noheader,nounits"])
     if code != 0:
         return []
     rows = []
     for line in out.splitlines():
         parts = [x.strip() for x in line.split(",")]
-        if len(parts) == 3:
-            rows.append({"pid": _num(parts[0]), "name": parts[1], "used_mb": _num(parts[2])})
+        if len(parts) == 4:
+            rows.append({"gpu_uuid": parts[0], "pid": _num(parts[1]), "name": parts[2], "used_mb": _num(parts[3])})
     return rows
+
+
+def vllm_gpu(gl: list[dict], env: dict) -> dict:
+    """Die GPU, auf der vLLM rechnet: LLMTB_GPU aus deploy/.env (Index oder UUID), sonst GPU 0."""
+    want = str(env.get("LLMTB_GPU") or "0").strip()
+    for g in gl:
+        if want in (str(g.get("uuid")), str(g.get("index"))):
+            return {"setting": want, "index": g.get("index"), "uuid": g.get("uuid"), "name": g.get("name")}
+    return {"setting": want, "index": None, "uuid": None, "name": None,
+            "note": "LLMTB_GPU passt zu keiner GPU in nvidia-smi" if gl else None}
 
 
 # ======================================================================= System
@@ -254,7 +264,8 @@ def run_snapshot(local_endpoint: bool | None = None) -> dict:
         "note": ("Rechner, auf dem die Testplattform läuft. Bei lokalem Szenario (K0–K6) ist das auch der "
                  "Inferenz-Rechner; bei entfernten Endpunkten nur der Lastgenerator."),
         "local_endpoint": local_endpoint,
-        "gpus": gpus(),
+        "gpus": (gl := gpus()),
+        "vllm_gpu": vllm_gpu(gl, env),
         "cuda_driver": cuda_driver_version(),
         "gpu_processes": gpu_processes(),
         "os": os_info(),
@@ -288,13 +299,20 @@ def _fmt(v: Any, unit: str = "") -> str:
     return f"{v}{(' ' + unit) if unit else ''}"
 
 
+def _used_gpu(snap: dict) -> dict | None:
+    gl = snap.get("gpus") or []
+    uuid = (snap.get("vllm_gpu") or {}).get("uuid")
+    return next((g for g in gl if uuid and g.get("uuid") == uuid), gl[0] if gl else None)
+
+
 def gpu_line(snap: dict) -> str | None:
-    """Ein Satz für Notizen/Zusammenfassung."""
-    g = (snap.get("gpus") or [None])[0]
+    """Ein Satz für Notizen/Zusammenfassung – über die GPU, auf der vLLM rechnet."""
+    g = _used_gpu(snap)
     if not g:
         return None
     mem = g.get("memory.total")
-    parts = [f"GPU {g.get('name')}"]
+    n = len(snap.get("gpus") or [])
+    parts = [f"GPU {g.get('name')}" + (f" (GPU {g.get('index')} von {n})" if n > 1 else "")]
     if mem:
         parts.append(f"{mem / 1024:.1f} GB".replace(".", ","))
     if g.get("driver_version"):
@@ -324,8 +342,11 @@ def render_md(snap: dict, title: str) -> str:
     gl = snap.get("gpus") or []
     if not gl:
         out.append("| GPU | keine NVIDIA-GPU gefunden (nvidia-smi) |")
+    used = _used_gpu(snap) or {}
     for g in gl:
         pre = f"GPU {g.get('index')}" if len(gl) > 1 else "GPU"
+        if len(gl) > 1:
+            pre += " (vLLM)" if g is used else " (nicht genutzt)"
         out += [f"| {pre} | {_fmt(g.get('name'))} |",
                 f"| {pre}: Speicher | {_fmt(g.get('memory.total'), 'MiB')} |",
                 f"| {pre}: Compute Capability | {_fmt(g.get('compute_cap'))} |",
@@ -334,12 +355,18 @@ def render_md(snap: dict, title: str) -> str:
                 f"({_fmt(g.get('power.default_limit'), 'W')} / {_fmt(g.get('power.max_limit'), 'W')}) |",
                 f"| {pre}: max. Takt SM / Speicher | {_fmt(g.get('clocks.max.sm'), 'MHz')} / "
                 f"{_fmt(g.get('clocks.max.mem'), 'MHz')} |",
-                f"| {pre}: Persistence Mode / MIG | {_fmt(g.get('persistence_mode'))} / {_fmt(g.get('mig.mode.current'))} |",
+                f"| {pre}: Persistence Mode / MIG / Monitor | {_fmt(g.get('persistence_mode'))} / "
+                f"{_fmt(g.get('mig.mode.current'))} / {_fmt(g.get('display_active'))} |",
                 f"| {pre}: beim Start belegt / Auslastung / Temperatur | {_fmt(g.get('memory.used'), 'MiB')} / "
                 f"{_fmt(g.get('utilization.gpu'), '%')} / {_fmt(g.get('temperature.gpu'), '°C')} |"]
     procs = snap.get("gpu_processes") or []
-    out.append("| Prozesse auf der GPU beim Start | " + (", ".join(
-        f"{p.get('name')} (PID {p.get('pid')}, {_fmt(p.get('used_mb'), 'MiB')})" for p in procs) or "keine") + " |")
+    idx_by_uuid = {g.get("uuid"): g.get("index") for g in gl}
+    out.append("| Prozesse auf den GPUs beim Start | " + (", ".join(
+        f"{p.get('name')} (GPU {idx_by_uuid.get(p.get('gpu_uuid'), '?')}, PID {p.get('pid')}, "
+        f"{_fmt(p.get('used_mb'), 'MiB')})" for p in procs) or "keine") + " |")
+    vg = snap.get("vllm_gpu") or {}
+    if vg.get("note"):
+        out.append(f"| **Achtung** | {vg['note']} (LLMTB_GPU={vg.get('setting')}) |")
     c = snap.get("cpu") or {}
     out += [f"| CPU | {_fmt(c.get('model'))} ({_fmt(c.get('logical_cpus'))} Threads) |",
             f"| Arbeitsspeicher | {_fmt(c.get('ram_gib'), 'GiB')} |", ""]

@@ -28,7 +28,9 @@ Testplattform Profil **„Lokal (LiteLLM, Mandant A)“** wählen und die Suite 
 übernommen (oben in der Oberfläche sichtbar).
 
 ```bash
-./scenario.sh list | status | logs [dienst] | save-logs [datei] | down | reset | gpu
+./scenario.sh list | status | logs [dienst] | save-logs [datei] | down | reset
+./scenario.sh gpu [index]   # GPU-Werte neu berechnen; mit Index: GPU wechseln, auf der vLLM rechnet
+./scenario.sh modell [standard|klein]
 ./scenario.sh detector up   # Wasserzeichen-Detektor allein (z. B. für K0 als Gegenprobe)
 ./scenario.sh run-all --status | --abbrechen
 ```
@@ -87,6 +89,7 @@ Jedes Szenario = K0 + genau die genannte(n) Maßnahme(n) (Ablationsstudie). K4 k
 ## Feste Rahmenbedingungen (Vergleichbarkeit)
 
 - Images gepinnt: `vllm/vllm-openai:v0.34.0`, `ghcr.io/berriai/litellm-database:v1.106.7`.
+- **Eine GPU** für alle Szenarien (`LLMTB_GPU`, wählt `init`; in K5 beide Instanzen darauf).
 - **Modellprofil** (`MODELL_PROFIL`, wählt `init` nach VRAM, wechseln mit `./scenario.sh modell`):
   `standard` = `Qwen/Qwen3-8B` ab ~44 GB VRAM (alle Szenarien einschließlich K5), `klein` = `Qwen/Qwen3-0.6B`
   für den Laptop. Beide nutzen denselben Tokenizer – die Prompts sind Token für Token gleich.

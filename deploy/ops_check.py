@@ -91,19 +91,31 @@ def read_env() -> dict[str, str]:
 
 
 def gpu_info() -> list[dict]:
-    code, out, _ = run(["nvidia-smi", "--query-gpu=name,memory.total,memory.used,driver_version",
-                        "--format=csv,noheader,nounits"])
-    gpus = []
-    if code == 0:
+    """Alle GPUs mit Index, UUID, Speicher und ob ein Monitor angeschlossen ist (ältere Treiber: ohne)."""
+    for fields in ("index,uuid,name,memory.total,memory.used,driver_version,display_active",
+                   "index,uuid,name,memory.total,memory.used,driver_version"):
+        code, out, _ = run(["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"])
+        if code != 0:
+            continue
+        gpus = []
         for line in out.splitlines():
             parts = [x.strip() for x in line.split(",")]
-            if len(parts) >= 4:
+            if len(parts) >= 6:
                 try:
-                    gpus.append({"name": parts[0], "total_mb": int(float(parts[1])),
-                                 "used_mb": int(float(parts[2])), "driver": parts[3]})
+                    gpus.append({"index": int(parts[0]), "uuid": parts[1], "name": parts[2],
+                                 "total_mb": int(float(parts[3])), "used_mb": int(float(parts[4])),
+                                 "driver": parts[5], "display": len(parts) > 6 and parts[6] == "Enabled"})
                 except ValueError:
                     pass
-    return gpus
+        if gpus:
+            return gpus
+    return []
+
+
+def selected_gpu(gpus: list[dict], env: dict) -> Optional[dict]:
+    """Die GPU, auf der vLLM rechnet (LLMTB_GPU in deploy/.env: Index oder UUID; ohne Eintrag GPU 0)."""
+    want = (env.get("LLMTB_GPU") or "0").strip()
+    return next((g for g in gpus if want in (g["uuid"], str(g["index"]))), None)
 
 
 def port_open(port: int) -> bool:
@@ -162,17 +174,28 @@ def check(gpu_container: bool = False) -> dict:
 
     # ------------------------------------------------------------------ GPU
     gpus = gpu_info()
-    vram = max((g["total_mb"] for g in gpus), default=0)
+    sel = selected_gpu(gpus, env)
+    vram = sel["total_mb"] if sel else 0
     min_vram, k5_min = vram_need(env)
     model_name = env.get("MODEL", "Qwen/Qwen3-8B")
-    if gpus:
-        g = max(gpus, key=lambda x: x["total_mb"])
+    if gpus and sel is None:
+        add("gpu", "NVIDIA-GPU", "fail",
+            f"LLMTB_GPU={env.get('LLMTB_GPU')} in deploy/.env passt zu keiner GPU (vorhanden: "
+            + ", ".join(f"{g['index']} {g['name']}" for g in gpus) + ")",
+            "./deploy/scenario.sh gpu <Index> ausführen")
+    elif gpus:
+        g = sel
         st = "ok" if vram >= min_vram else "fail"
         add("gpu", "NVIDIA-GPU", st,
             f"{g['name']}, {g['total_mb'] / 1024:.1f} GB VRAM ({g['used_mb'] / 1024:.1f} GB belegt), Treiber {g['driver']}"
-            + (f" – {len(gpus)} GPUs, genutzt wird GPU 0" if len(gpus) > 1 else ""),
+            + (f" – {len(gpus)} GPUs, vLLM nutzt GPU {g['index']} (ändern: ./deploy/scenario.sh gpu <Index>)"
+               if len(gpus) > 1 else ""),
             "" if st == "ok" else f"{model_name} braucht mindestens {-(-min_vram // 1024)} GB VRAM – kleineres Modell: "
                                   "./deploy/scenario.sh modell klein")
+        if g.get("display"):
+            add("gpu_display", "Monitor an der Mess-GPU", "warn",
+                f"An GPU {g['index']} ist ein Monitor angeschlossen – die Bildschirmausgabe stört die Zeitmessungen",
+                "Monitor an eine andere GPU anschließen" + (" oder ./deploy/scenario.sh gpu <Index>" if len(gpus) > 1 else ""))
         if vram >= k5_min:
             add("k5", "Szenario K5 (zwei Instanzen)", "ok", f"genug VRAM für zwei Instanzen von {model_name}")
         else:
@@ -194,7 +217,8 @@ def check(gpu_container: bool = False) -> dict:
         runtimes = json.dumps(info.get("Runtimes") or {})
         cdi = any(Path(p).exists() for p in ("/etc/cdi/nvidia.yaml", "/var/run/cdi/nvidia.yaml"))
         if gpu_container and present.get(vllm_img):
-            c4, out4, err4 = run(["docker", "run", "--rm", "--gpus", "all", "--entrypoint", "nvidia-smi", vllm_img, "-L"],
+            dev = f"device={sel['uuid']}" if sel else "all"   # dieselbe GPU wie die Szenarien
+            c4, out4, err4 = run(["docker", "run", "--rm", "--gpus", dev, "--entrypoint", "nvidia-smi", vllm_img, "-L"],
                                  timeout=90)
             if c4 == 0:
                 add("gpu_docker", "GPU im Container", "ok", out4.splitlines()[0][:120] if out4 else "sichtbar")
@@ -298,7 +322,7 @@ def check(gpu_container: bool = False) -> dict:
     vram_txt = f"{vram / 1024:.1f} GB" if vram else "–"
     fails = [i for i in items if i["status"] == "fail"]
     return {
-        "ok": not fails, "items": items, "gpus": gpus, "vram_mb": vram, "k5_possible": vram >= k5_min,
+        "ok": not fails, "items": items, "gpus": gpus, "selected_gpu": sel, "vram_mb": vram, "k5_possible": vram >= k5_min,
         "images_missing": [i for i, ok in present.items() if not ok], "model_cached": model_ok,
         "init_done": init_ok, "profiles_done": prof_ok, "docker_desktop": desktop, "project": PROJECT,
         "summary": ("bereit" if not fails else f"{len(fails)} Problem(e)") + f" · VRAM {vram_txt}",
