@@ -19,3 +19,4 @@ deploy/.active-scenario.json
 data/testbench.log
 data/testbench.pid
 data/exports/
+data/container-logs/

@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from . import storage, stats
+from . import environment, storage, stats
 from .client import Endpoint, StreamResult, make_client, measure_network_latency, now_ns, simple_get
 from .prompts import get_factory
 from .sysmon import SleepInhibitor, cpu, network_kind, power_state
@@ -593,6 +593,11 @@ class Batch:
                          profile=self.profile, settings=settings, batch=self)
         net = await measure_network_latency(ctx.client, ctx.ep)
         fingerprint = await endpoint_fingerprint(ctx)
+        try:
+            env_snap = await asyncio.to_thread(environment.run_snapshot,
+                                               storage._is_local(self.profile.get("base_url", "")))
+        except Exception as e:  # noqa: BLE001 – die Messung darf daran nie scheitern
+            env_snap = {"error": f"{type(e).__name__}: {e}"}
         cfg = {
             "test": mod.id, "test_name": mod.manifest.get("name"), "category": mod.manifest.get("category"),
             "run_id": run["run_id"], "batch_id": self.id, "batch_label": self.label, "batch_index": run["index"],
@@ -604,6 +609,8 @@ class Batch:
                        "sleep_inhibit": inhibit_method, "python": sys.version.split()[0]},
             "endpoint_fingerprint": fingerprint,
             "deploy_scenario": storage.active_scenario(self.profile),
+            # Hardware, Treiber, Images (Digest), Git-Commit und Code-Hash – siehe app/environment.py
+            "environment": env_snap,
             "tenants": sorted(r for r in ctx.tenant_eps if r not in ctx.pool_roles),
             "tenant_pool": len(ctx.pool_roles),
             "slo": settings["slo"],

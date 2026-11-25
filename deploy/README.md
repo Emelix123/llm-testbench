@@ -28,12 +28,17 @@ Testplattform Profil **„Lokal (LiteLLM, Mandant A)“** wählen und die Suite 
 übernommen (oben in der Oberfläche sichtbar).
 
 ```bash
-./scenario.sh list | status | logs [dienst] | down | reset | gpu
+./scenario.sh list | status | logs [dienst] | save-logs [datei] | down | reset | gpu
 ./scenario.sh detector up   # Wasserzeichen-Detektor allein (z. B. für K0 als Gegenprobe)
 ./scenario.sh run-all --status | --abbrechen
 ```
 
 `LLMTB_PROJECT=name` trennt die Docker-Volumes mehrerer Repo-Kopien (Standard `llmtb`).
+
+**Logs bleiben erhalten:** `down` und `reset` (auch das `down` am Anfang jedes `up`) sichern vorher die Logs
+aller Container nach `data/container-logs/<Zeit>_<Szenario>.log` – mit dem `vllm serve`-Kommando aus
+`start-vllm.sh` und der tatsächlichen KV-Cache-Größe. Keys, Passwörter und der Wasserzeichen-Schlüssel werden
+dabei geschwärzt (`redact_logs.py`). Der Gesamtlauf legt die Logs zusätzlich in seinen Export.
 
 | Dienst | Adresse | Wer darf |
 |---|---|---|
@@ -110,6 +115,7 @@ Jedes Szenario = K0 + genau die genannte(n) Maßnahme(n) (Ablationsstudie). K4 k
 deploy/
   scenario.sh              Steuerung (check, init, pull, run-all, up, down, profile, detector …)
   ops_check.py             Systemprüfung (auch für die Seite „Steuerung“), nur Standardbibliothek
+  redact_logs.py           schwärzt Geheimnisse in gesicherten Container-Logs (save-logs, vor jedem down)
   .env.example             Vorlage; .env und secrets/ entstehen mit init (nie einchecken)
   compose/common.yaml      Bausteine (vllm, litellm, postgres, tenant-setup, wm-detector)
   compose/k0 … k6-*.yaml   die Szenarien (je Datei Kommentar mit Zweck und Erwartung)
