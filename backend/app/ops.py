@@ -168,13 +168,15 @@ ops = Ops()
 # ======================================================================= Szenarien & Status
 
 def vram_mb() -> int | None:
+    """VRAM der GPU, auf der vLLM rechnet (LLMTB_GPU in deploy/.env, sonst GPU 0)."""
     if ops.last_check and ops.last_check.get("vram_mb"):
         return int(ops.last_check["vram_mb"])
+    sel = environment.deploy_env().get("LLMTB_GPU") or "0"
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+        out = subprocess.run(["nvidia-smi", "-i", sel, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
                              capture_output=True, text=True, timeout=10).stdout
         vals = [int(float(x)) for x in out.split() if x.strip()]
-        return max(vals) if vals else None
+        return vals[0] if vals else None
     except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
 
@@ -479,9 +481,11 @@ def write_export(g: Gesamtlauf) -> dict:
     if (env.get("git") or {}).get("dirty"):
         warnings.append("**Hinweis: nicht eingecheckte Änderungen am Code** beim Start (Liste in umgebung.md). "
                         "Für die Arbeit besser von einem sauberen Commit aus messen.")
-    foreign = env.get("gpu_processes") or []
+    used = env.get("vllm_gpu") or {}
+    foreign = [p for p in env.get("gpu_processes") or []
+               if not used.get("uuid") or not p.get("gpu_uuid") or p.get("gpu_uuid") == used.get("uuid")]
     if foreign:
-        warnings.append("Hinweis: Beim Start belegten Prozesse die GPU (" +
+        warnings.append("Hinweis: Beim Start belegten Prozesse die Mess-GPU (" +
                         ", ".join(f"{p.get('name')} {p.get('used_mb')} MiB" for p in foreign) +
                         "). War das ein noch laufendes Szenario, ist es unkritisch (das erste `up` stoppt es); "
                         "sonst verfälscht fremde Last die Zeitmessungen.")

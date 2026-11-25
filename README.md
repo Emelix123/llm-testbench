@@ -69,6 +69,10 @@ WSL-Einrichtung: [`docs/WSL-SETUP.md`](docs/WSL-SETUP.md).
 Speichergrenzen gemeinsam; danach `pull-model`). Der KV-Cache ist in beiden Profilen ≈ 6 540 Tokens groß,
 damit die Tests gleich ausgelegt bleiben. Messungen mit verschiedenen Profilen sind nicht vergleichbar.
 
+**Mehrere GPUs:** vLLM rechnet auf genau einer GPU (`LLMTB_GPU` in `deploy/.env`). `init` wählt die mit dem
+meisten Speicher (bei Gleichstand die ohne Monitor); ändern mit `./deploy/scenario.sh gpu <Index>`. Details:
+[`docs/SERVER.md`](docs/SERVER.md#mehrere-gpus).
+
 Am einfachsten über die Weboberfläche: **Steuerung → Gesamtlauf**. Er startet jedes gewählte Szenario,
 misst die Suite **„Konfigurationsvergleich (je Szenario)“** (Härtung, Prefix-Cache-Seitenkanal,
 Leistungskosten der Isolation, Kosten der Cache-Trennung, Wasserzeichen, Ressourcenverdrängung) so oft
