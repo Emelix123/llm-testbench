@@ -4,7 +4,8 @@ Lokales Test-Tool: zeigt per Knopfdruck, wie viele Anfragen eine vLLM-Maschine h
 wirklich gleichzeitig rechnet, wie viele Nutzer sie trägt, was 1 Mio. Tokens kostet und ob die
 Konfiguration stimmt – und misst für die Bachelorarbeit, wie gut Konfigurationen von vLLM + LiteLLM
 Mandanten trennen und was das an Leistung kostet (Szenarien K0–K6, per Knopfdruck aus der Oberfläche).
-Läuft auf dem Laptop (Linux/WSL) oder einem GPU-Server.
+Läuft auf einem GPU-Server (Qwen3-8B, z. B. RTX PRO 6000) oder dem Laptop (Linux/WSL, Qwen3-0.6B) –
+das Modell wählt `./deploy/scenario.sh init` nach dem VRAM.
 
 ## Schnellstart
 
@@ -18,7 +19,7 @@ Dann <http://localhost:8080> öffnen und links im Menü **Anleitung** wählen �
 Schritt durch alles Weitere. Bedient wird alles auf der Seite **Steuerung**:
 
 1. **Systemprüfung** – Docker, GPU, Images, Modell, Einrichtung (läuft beim Öffnen automatisch).
-2. **Einrichten** und **Images & Modell laden** – einmalig je Rechner (~40 GB Download).
+2. **Einrichten** und **Images & Modell laden** – einmalig je Rechner (~40 GB Images + Modell: Qwen3-8B ~16 GB).
 3. **Gesamtlauf** – misst alle Szenarien K0–K6 nacheinander; Dauer ~20 min je Szenario und Wiederholung.
 4. Ergebnisse auf der Seite **Konfigurationen** (LaTeX-/CSV-Export) und in `data/exports/`.
 
@@ -62,6 +63,12 @@ Schutzmaßnahmen der Arbeit unterscheiden (K0 Standard … K4 voll gehärtet nac
 K5 dedizierte Instanzen, K6 Wasserzeichen). Details und Befunde: [`deploy/README.md`](deploy/README.md),
 WSL-Einrichtung: [`docs/WSL-SETUP.md`](docs/WSL-SETUP.md).
 
+**Modell:** `./deploy/scenario.sh init` wählt das Modellprofil nach dem VRAM – **standard = Qwen3-8B** ab
+~44 GB (alle Szenarien einschließlich K5, z. B. RTX PRO 6000 mit 96 GB), sonst **klein = Qwen3-0.6B**
+(Laptop). Wechseln: `./deploy/scenario.sh modell standard|klein` (setzt Modell, KV-Cache und
+Speichergrenzen gemeinsam; danach `pull-model`). Der KV-Cache ist in beiden Profilen ≈ 6 540 Tokens groß,
+damit die Tests gleich ausgelegt bleiben. Messungen mit verschiedenen Profilen sind nicht vergleichbar.
+
 Am einfachsten über die Weboberfläche: **Steuerung → Gesamtlauf**. Er startet jedes gewählte Szenario,
 misst die Suite **„Konfigurationsvergleich (je Szenario)“** (Härtung, Prefix-Cache-Seitenkanal,
 Leistungskosten der Isolation, Kosten der Cache-Trennung, Wasserzeichen, Ressourcenverdrängung) so oft
@@ -90,7 +97,7 @@ Im Terminal geht alles genauso (`deploy/scenario.sh`, Übersicht mit `./deploy/s
 ```bash
 ./deploy/scenario.sh check             # Systemprüfung
 ./deploy/scenario.sh init              # Schlüssel, GPU-Werte, Profile (einmalig)
-./deploy/scenario.sh pull              # Images ~40 GB + Modell (einmalig)
+./deploy/scenario.sh pull              # Images ~40 GB + Modell (Qwen3-8B ~16 GB, einmalig)
 ./deploy/scenario.sh run-all -n 3      # Gesamtlauf: alle passenden Szenarien, je 3 Wiederholungen
 ./deploy/scenario.sh up K1             # oder ein Szenario einzeln starten (down: stoppen)
 ```
@@ -125,7 +132,7 @@ anderen nutzen. Die Plattform misst das an drei Stellen:
 |---|---|---|
 | eingeschwungen, 3 Mandanten | Leistungskosten der Isolation | Jeder Mandant hat seine Kopie im Cache – der Unterschied zu K0 ist klein |
 | neuer Mandant (Kaltstart) | Kosten der Cache-Trennung | Ohne Salt kommt die Vorlage aus dem Cache eines anderen Mandanten, mit Salt muss der neue Mandant sie selbst berechnen: TTFT-Aufschlag je neuem Mandanten |
-| viele Mandanten (1, 3, 10, 30) | Kosten der Cache-Trennung | Mit Salt liegt die Vorlage N-mal im KV-Cache (fest 750 MB ≈ 6 500 Tokens). Passt das nicht mehr hinein, fallen die Treffer, TTFT steigt, der Durchsatz sinkt |
+| viele Mandanten (1, 3, 10, 30) | Kosten der Cache-Trennung | Mit Salt liegt die Vorlage N-mal im KV-Cache (fest ≈ 6 500 Tokens). Passt das nicht mehr hinein, fallen die Treffer, TTFT steigt, der Durchsatz sinkt |
 
 In Euro: Die Seite **Konfigurationen** (und der Export) rechnet aus dem Durchsatz die Kosten je 1 Mio.
 Output-Tokens: (Maschine €/h + Leistung kW × Strompreis) / (Durchsatz × 3 600 s × Auslastung). Die

@@ -24,9 +24,19 @@ from typing import Optional
 DEPLOY = Path(__file__).resolve().parent
 ROOT = DEPLOY.parent
 PROJECT = os.environ.get("LLMTB_PROJECT", "llmtb")
-K5_MIN_MB = 8000          # zwei vLLM-Instanzen auf einer GPU
-MIN_VRAM_MB = 3800        # Qwen3-0.6B + 0,7 GiB KV-Cache
 IMAGES_GB = 40            # vLLM ~36 GB + LiteLLM ~1,7 GB + Postgres
+
+
+def vram_need(env: dict) -> tuple[int, int]:
+    """(Mindestbedarf einer vLLM-Instanz, Bedarf für K5 mit zwei Instanzen) in MB – aus dem Modellprofil.
+
+    Ältere .env ohne MODEL_GPU_MIN_MB: Werte von Qwen3-0.6B (3800 MB, K5 8000 MB).
+    """
+    try:
+        need = int(env.get("MODEL_GPU_MIN_MB") or 3800)
+    except ValueError:
+        need = 3800
+    return need, 2 * need + 400
 
 
 def power_state() -> Optional[dict]:
@@ -153,17 +163,21 @@ def check(gpu_container: bool = False) -> dict:
     # ------------------------------------------------------------------ GPU
     gpus = gpu_info()
     vram = max((g["total_mb"] for g in gpus), default=0)
+    min_vram, k5_min = vram_need(env)
+    model_name = env.get("MODEL", "Qwen/Qwen3-8B")
     if gpus:
         g = max(gpus, key=lambda x: x["total_mb"])
-        st = "ok" if vram >= MIN_VRAM_MB else "fail"
+        st = "ok" if vram >= min_vram else "fail"
         add("gpu", "NVIDIA-GPU", st,
             f"{g['name']}, {g['total_mb'] / 1024:.1f} GB VRAM ({g['used_mb'] / 1024:.1f} GB belegt), Treiber {g['driver']}"
             + (f" – {len(gpus)} GPUs, genutzt wird GPU 0" if len(gpus) > 1 else ""),
-            "" if st == "ok" else "Mindestens 4 GB VRAM nötig.")
-        if vram >= K5_MIN_MB:
-            add("k5", "Szenario K5 (zwei Instanzen)", "ok", "genug VRAM für zwei vLLM-Instanzen")
+            "" if st == "ok" else f"{model_name} braucht mindestens {-(-min_vram // 1024)} GB VRAM – kleineres Modell: "
+                                  "./deploy/scenario.sh modell klein")
+        if vram >= k5_min:
+            add("k5", "Szenario K5 (zwei Instanzen)", "ok", f"genug VRAM für zwei Instanzen von {model_name}")
         else:
-            add("k5", "Szenario K5 (zwei Instanzen)", "warn", f"braucht >= 8 GB VRAM, hier {vram / 1024:.1f} GB",
+            add("k5", "Szenario K5 (zwei Instanzen)", "warn",
+                f"braucht mit {model_name} >= {-(-k5_min // 1024)} GB VRAM, hier {vram / 1024:.1f} GB",
                 "K5 wird im Gesamtlauf übersprungen; in der Arbeit als „nicht gemessen“ kennzeichnen.")
     else:
         add("gpu", "NVIDIA-GPU", "fail", "nvidia-smi nicht gefunden oder keine GPU",
@@ -221,7 +235,7 @@ def check(gpu_container: bool = False) -> dict:
                  else "nicht prüfbar") + (f"; nötig: ~{need_gb} GB" if missing else ""))
 
     cache = os.path.expanduser(env.get("HF_CACHE", "~/.cache/huggingface"))
-    model = env.get("MODEL", "Qwen/Qwen3-0.6B")
+    model = env.get("MODEL", "Qwen/Qwen3-8B")
     mdir = Path(cache) / "hub" / ("models--" + model.replace("/", "--")) / "snapshots"
     model_ok = mdir.is_dir() and any(mdir.iterdir())
     if model_ok:
@@ -284,7 +298,7 @@ def check(gpu_container: bool = False) -> dict:
     vram_txt = f"{vram / 1024:.1f} GB" if vram else "–"
     fails = [i for i in items if i["status"] == "fail"]
     return {
-        "ok": not fails, "items": items, "gpus": gpus, "vram_mb": vram, "k5_possible": vram >= K5_MIN_MB,
+        "ok": not fails, "items": items, "gpus": gpus, "vram_mb": vram, "k5_possible": vram >= k5_min,
         "images_missing": [i for i, ok in present.items() if not ok], "model_cached": model_ok,
         "init_done": init_ok, "profiles_done": prof_ok, "docker_desktop": desktop, "project": PROJECT,
         "summary": ("bereit" if not fails else f"{len(fails)} Problem(e)") + f" · VRAM {vram_txt}",

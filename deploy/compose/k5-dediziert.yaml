@@ -6,7 +6,8 @@
 # (Rechenwerke, Speicherbandbreite) teilen sich beide aber weiterhin. Echte Hardware-Trennung
 # wäre MIG; das gibt es auf GeForce-/Laptop-GPUs und unter WSL nicht.
 #
-# Braucht >= 8 GB VRAM (2x Gewichte + Aktivierungen). Auf der 4-GB-RTX-3050 passt es NICHT.
+# Braucht 2 × MODEL_GPU_MIN_MB + 400 MB VRAM (2x Gewichte + KV-Cache + Aktivierungen): mit Qwen3-8B
+# ~44 GB (RTX PRO 6000: ja), mit Qwen3-0.6B ~8 GB. Auf der 4-GB-RTX-3050 passt es NICHT.
 # --enforce-eager spart die CUDA-Graphen.
 # Erwartung: Prefix-Seitenkanal GRÜN, Noisy Neighbor nur noch über die GPU-Rechenzeit sichtbar
 # (S_N > 1, aber keine Verdrängung von Cache-Blöcken), Durchsatz je Instanz deutlich kleiner.

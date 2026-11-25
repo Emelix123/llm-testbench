@@ -67,12 +67,13 @@ Alternative ohne uv: `sudo add-apt-repository ppa:deadsnakes/ppa` und
 
 ### 2.4 GPU-Speicher: feste KV-Cache-Größe
 
+Auf der 4-GB-Laptop-GPU wählt `./deploy/scenario.sh init` das Modellprofil `klein` (Qwen3-0.6B).
 Unter WSL belegt Windows einen Teil der GPU (hier ~0,8 GB). vLLM 0.34 prüft beim Start, ob
 `--gpu-memory-utilization` × 4 GB frei ist, und bricht sonst ab. Deshalb in `deploy/.env`:
 
 ```ini
 GPU_MEMORY_UTILIZATION=0.78     # < freier Anteil (3,17 von 4 GB)
-KV_CACHE_MEMORY=750000000       # feste KV-Cache-Größe in allen Szenarien (~6 500 Tokens)
+KV_CACHE_MEMORY=750000000       # feste KV-Cache-Größe in allen Szenarien (~6 500 Tokens bei Qwen3-0.6B)
 ```
 
 Vor Messungen GPU-hungrige Windows-Programme schließen (Browser mit Hardwarebeschleunigung, Spiele,
@@ -108,7 +109,7 @@ Nicht nötig für die Tests; Docker Desktop funktioniert mit der vorhandenen `nv
 
 Die GPU-/Host-Ebene (Angreifertyp A2) lässt sich auf dem Laptop daher nicht messen – das deckt sich mit dem
 Bedrohungsmodell der Arbeit (Fokus A1). Für die Zielhardware von Leitwerk gelten die Szenarien unverändert;
-dort zusätzlich K5 (≥ 8 GB VRAM) und ggf. MIG.
+dort zusätzlich K5 und ggf. MIG; ab ~44 GB VRAM wählt `init` dort Qwen3-8B.
 
 ## 4. Kurzablauf
 

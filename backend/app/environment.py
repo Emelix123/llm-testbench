@@ -34,9 +34,10 @@ ROOT = storage.ROOT
 DEPLOY = ROOT / "deploy"
 
 # Nur diese Werte aus deploy/.env werden übernommen – alles andere kann geheim sein.
-DEPLOY_ENV_PUBLIC = ("VLLM_IMAGE", "LITELLM_IMAGE", "POSTGRES_IMAGE", "MODEL", "SERVED_MODEL_NAME",
+DEPLOY_ENV_PUBLIC = ("VLLM_IMAGE", "LITELLM_IMAGE", "POSTGRES_IMAGE", "MODELL_PROFIL", "MODEL", "SERVED_MODEL_NAME",
                      "MAX_MODEL_LEN", "KV_CACHE_MEMORY", "GPU_MEMORY_UTILIZATION", "KV_CACHE_MEMORY_DEDICATED",
-                     "GPU_MEMORY_UTILIZATION_DEDICATED", "TENANT_POOL_SIZE", "LLMTB_GPU_VRAM_MB")
+                     "GPU_MEMORY_UTILIZATION_DEDICATED", "MODEL_GPU_MB", "MODEL_GPU_MIN_MB", "TENANT_POOL_SIZE",
+                     "LLMTB_GPU_VRAM_MB")
 
 # Dateien, deren Inhalt das Messverfahren bestimmt (Code-Hash). data/ und Geheimnisse nie.
 CODE_GLOBS = ("backend/app/*.py", "backend/requirements.txt", "tests/*/*.py", "tests/*/*.json", "tests/*/*.jsonl",

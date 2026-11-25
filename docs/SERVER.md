@@ -11,10 +11,10 @@ Engine funktioniert genauso; die Systemprüfung zeigt vor dem großen Download, 
 
 | | Mindestens | Prüfen |
 |---|---|---|
-| GPU | NVIDIA, ≥ 4 GB VRAM (K5: ≥ 8 GB) | `nvidia-smi` |
+| GPU | NVIDIA; Qwen3-8B: ≥ 22 GB VRAM (K5: ≥ 44 GB), auf kleineren GPUs Qwen3-0.6B: ≥ 4 GB (K5: ≥ 8 GB) | `nvidia-smi` |
 | Docker | Engine ≥ 25 mit Compose v2 ≥ 2.20, eigener Nutzer in der Gruppe `docker` | `docker compose version` |
 | GPU in Containern | [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) | `./deploy/scenario.sh check --gpu-container` |
-| Speicherplatz | ~50 GB für Docker (vLLM-Image allein 36 GB) + ~2 GB Modell | Systemprüfung |
+| Speicherplatz | ~50 GB für Docker (vLLM-Image allein 36 GB) + Modell im Hugging-Face-Cache (Qwen3-8B ~16 GB) | Systemprüfung |
 | Internet | Docker Hub, ghcr.io, huggingface.co, PyPI (sonst: [ohne Internet](#server-ohne-internet)) | Systemprüfung |
 | Werkzeuge | `git`, `curl`, `python3` (beliebige Version, für kleine Hilfsskripte) | – |
 
@@ -50,9 +50,9 @@ ssh -L 8080:localhost:8080 nutzer@server
 Dann in der Oberfläche (Menü → **Anleitung** erklärt jeden Schritt):
 
 1. **Steuerung → Systemprüfung**: alles ✘ zuerst beheben (unter jedem Punkt steht, wie).
-2. **Einrichten** (Schlüssel, GPU-Werte, Profile mit 3 + 30 Mandanten-Keys) und **Images & Modell laden** (~40 GB).
+2. **Einrichten** (Schlüssel, GPU-Werte, Profile mit 3 + 30 Mandanten-Keys) und **Images & Modell laden** (~40 GB + ~16 GB Qwen3-8B).
 3. Nach dem Laden **Gründlich (GPU im Container)** prüfen.
-4. **Gesamtlauf**: Szenarien sind vorausgewählt (K5 nur ab 8 GB VRAM), Wiederholungen **3** für die
+4. **Gesamtlauf**: Szenarien sind vorausgewählt (K5 nur, wenn zwei Modellkopien passen: Qwen3-8B ab 44 GB), Wiederholungen **3** für die
    Arbeit, starten. Der Browser darf zu – der Lauf geht weiter; später einfach den Tunnel neu öffnen.
 5. Ergebnisse: Seite **Konfigurationen** oder Download auf der Seite Steuerung. Auf den eigenen
    Rechner holen:
@@ -107,15 +107,19 @@ die Zusammenfassung warnt sonst.
 
 `init` liest den VRAM und setzt in `deploy/.env`:
 
-- `KV_CACHE_MEMORY` bleibt **fest** bei 750 MB (≈ 6 500 Tokens). Damit verhalten sich alle Szenarien
-  auf Laptop und Server gleich, und die Sicherheitsbefunde (z. B. Verdrängung bei vollem KV-Cache)
-  bleiben vergleichbar. Absolute Zeiten (TTFT, Durchsatz) hängen natürlich von der GPU ab.
+- das **Modellprofil**: `standard` (Qwen3-8B), sobald alle Szenarien einschließlich K5 hineinpassen
+  (2 × 22 GB + Puffer ≈ 44 GB, z. B. RTX PRO 6000 mit 96 GB), sonst `klein` (Qwen3-0.6B). Wechseln mit
+  `./deploy/scenario.sh modell standard|klein` (bei gestopptem Szenario), danach `pull-model`.
+- `KV_CACHE_MEMORY` bleibt **fest** bei ≈ 6 540 Tokens (Qwen3-8B: 965 MB, Qwen3-0.6B: 750 MB). Damit
+  verhalten sich alle Szenarien gleich, und die Sicherheitsbefunde (z. B. Verdrängung bei vollem
+  KV-Cache, Kosten der Cache-Trennung mit 1–30 Mandanten) bleiben untereinander vergleichbar.
 - `GPU_MEMORY_UTILIZATION` ist nur die Obergrenze, die vLLM beim Start gegen den **freien** Speicher
-  prüft: ~5 GB genügen für Qwen3-0.6B; auf kleinen GPUs höchstens 0,78. Auf geteilten GPUs bleibt so
-  Platz für andere.
-- K5 (zwei Instanzen auf einer GPU) wird erst ab 8 GB VRAM angeboten.
+  prüft: `MODEL_GPU_MB` je Instanz (Qwen3-8B ~24 GB → 0,25 auf 96 GB; Qwen3-0.6B ~5 GB); auf kleinen
+  GPUs höchstens 0,78. Auf geteilten GPUs bleibt so Platz für andere.
+- K5 (zwei Instanzen auf einer GPU) wird nur angeboten, wenn zwei Modellkopien passen.
 
-Neu berechnen: `./deploy/scenario.sh gpu` (oder Steuerung → Wartung). Wer die ganze GPU für den
+Neu berechnen: `./deploy/scenario.sh gpu` (oder Steuerung → Wartung) – rechnet mit dem eingestellten
+Modellprofil. Wer die ganze GPU für den
 KV-Cache nutzen will, setzt `KV_CACHE_MEMORY=` leer und `GPU_MEMORY_UTILIZATION` z. B. auf 0.85 – die
 Ergebnisse sind dann aber nicht mehr mit anderen Rechnern vergleichbar. Bei mehreren GPUs nutzt jede
 vLLM-Instanz eine GPU (`count: 1` in `deploy/compose/common.yaml`).
@@ -135,7 +139,7 @@ Auf einem Rechner **mit** Internet:
 ```bash
 docker pull vllm/vllm-openai:v0.34.0 ghcr.io/berriai/litellm-database:v1.106.7 postgres:16-alpine
 docker save vllm/vllm-openai:v0.34.0 ghcr.io/berriai/litellm-database:v1.106.7 postgres:16-alpine | gzip > llmtb-images.tar.gz
-tar -czf llmtb-modell.tar.gz -C ~/.cache/huggingface hub/models--Qwen--Qwen3-0.6B
+tar -czf llmtb-modell.tar.gz -C ~/.cache/huggingface hub/models--Qwen--Qwen3-8B   # bzw. Qwen3-0.6B
 ```
 
 Beide Dateien auf den Server kopieren, dort:

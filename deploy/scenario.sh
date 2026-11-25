@@ -11,6 +11,8 @@
 #                                 nach data/exports/ (startet die Testplattform bei Bedarf im Hintergrund)
 #   ./scenario.sh run-all --status | --abbrechen
 #   ./scenario.sh gpu             GPU-Werte in deploy/.env neu aus dem VRAM berechnen
+#   ./scenario.sh modell [name]   Modellprofil anzeigen oder wechseln: standard (Qwen3-8B, ab ~44 GB VRAM,
+#                                 wählt init automatisch) oder klein (Qwen3-0.6B, Laptop)
 #   ./scenario.sh list            Szenarien anzeigen
 #   ./scenario.sh up K1           Szenario starten (stoppt ein laufendes vorher), Mandanten anlegen
 #   ./scenario.sh down            alles stoppen (Daten bleiben)
@@ -50,6 +52,71 @@ envval() { local f=.env; [[ -f $f ]] || f=.env.example; grep -E "^$1=" "$f" | he
 setenv() { if grep -qE "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else echo "$1=$2" >> .env; fi; }
 gpu_vram_mb() { nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | tr -d ' ' | sort -n | tail -1; }
 
+# ------------------------------------------------------------------ Modellprofile
+# Ein Profil legt Modell, KV-Cache und Speicherbedarf fest. Der KV-Cache steht in Bytes, ist aber so
+# gewählt, dass er in TOKENS in jedem Profil gleich groß ist: ~6 540 Tokens je Instanz, in K5 ~4 360.
+# Darauf sind die Tests ausgelegt (z. B. „Kosten der Cache-Trennung“: Vorlage 512 Tokens × 1 … 30 Mandanten).
+#   Bytes je Token (bf16) = 2 (K und V) × Schichten × KV-Köpfe × Kopfdimension × 2 Byte
+#   Qwen3-0.6B: 2 × 28 × 8 × 128 × 2 = 114 688 B  →  750 MB ≈ 6 540 Tokens,  500 MB ≈ 4 360 Tokens
+#   Qwen3-8B:   2 × 36 × 8 × 128 × 2 = 147 456 B  →  965 MB ≈ 6 540 Tokens,  643 MB ≈ 4 360 Tokens
+# Felder: MODEL | KV_CACHE_MEMORY | KV_CACHE_MEMORY_DEDICATED | MODEL_GPU_MB | MODEL_GPU_MIN_MB
+#   MODEL_GPU_MB      Speicher, den eine Instanz anfordert (daraus GPU_MEMORY_UTILIZATION)
+#   MODEL_GPU_MIN_MB  Mindestbedarf je Instanz (Gewichte + KV-Cache + Puffer); K5 braucht 2 × davon + 400 MB
+declare -A MODELL_PROFILE=(
+  [standard]="Qwen/Qwen3-8B|965000000|643000000|24000|22000"
+  [klein]="Qwen/Qwen3-0.6B|750000000|500000000|5000|3800"
+)
+profile_field() { local f; IFS='|' read -r -a f <<< "${MODELL_PROFILE[$1]}"; echo "${f[$2]}"; }
+k5_need_mb() { echo $(( 2 * $1 + 400 )); }
+gb() { echo $(( ($1 + 1023) / 1024 )); }   # MB → GB, aufgerundet
+
+apply_model_profile() {
+  [[ -n "${MODELL_PROFILE[$1]:-}" ]] || die "unbekanntes Modellprofil „$1“ (verfügbar: standard, klein)"
+  local model kv kvd need needmin
+  IFS='|' read -r model kv kvd need needmin <<< "${MODELL_PROFILE[$1]}"
+  setenv MODELL_PROFIL "$1"
+  setenv MODEL "$model"
+  setenv KV_CACHE_MEMORY "$kv"
+  setenv KV_CACHE_MEMORY_DEDICATED "$kvd"
+  setenv MODEL_GPU_MB "$need"
+  setenv MODEL_GPU_MIN_MB "$needmin"
+  echo "Modellprofil „$1“: $model – KV-Cache $kv Bytes (~6 540 Tokens), in K5 je Instanz $kvd Bytes (~4 360 Tokens)."
+}
+
+# init: Profil nach VRAM – „standard“, sobald alle Szenarien einschließlich K5 hineinpassen
+choose_model_profile() {
+  local mb; mb=$(gpu_vram_mb || true)
+  local grenze; grenze=$(k5_need_mb "$(profile_field standard 4)")
+  if [[ -z "$mb" ]]; then
+    echo "Keine NVIDIA-GPU gefunden – Modellprofil „standard“ (Qwen3-8B) aus der Vorlage bleibt."
+    apply_model_profile standard
+  elif (( mb >= grenze )); then
+    echo "GPU mit $((mb / 1024)) GB VRAM: alle Szenarien einschließlich K5 passen mit Qwen3-8B."
+    apply_model_profile standard
+  else
+    echo "GPU mit $((mb / 1024)) GB VRAM: zu klein für Qwen3-8B in allen Szenarien (ab $(gb "$grenze") GB) – nehme Qwen3-0.6B."
+    apply_model_profile klein
+  fi
+  echo "Wechseln: ./scenario.sh modell standard|klein"
+}
+
+cmd_modell() {
+  [[ -f .env ]] || die "zuerst ./scenario.sh init"
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    echo "Aktuelles Modellprofil: $(envval MODELL_PROFIL || true) – $(envval MODEL || true)"
+    echo "  standard: $(profile_field standard 0)  (ab $(gb "$(k5_need_mb "$(profile_field standard 4)")") GB VRAM für alle Szenarien)"
+    echo "  klein:    $(profile_field klein 0)  (Laptop, ab 4 GB VRAM)"
+    echo "Wechseln: ./scenario.sh modell standard|klein"
+    return 0
+  fi
+  [[ ! -f "$ACTIVE" ]] || die "erst das laufende Szenario stoppen (./scenario.sh down) – sonst rechnet vLLM noch mit dem alten Modell"
+  apply_model_profile "$name"
+  cmd_gpu
+  [[ -f secrets/cache_salt_secret ]] && cmd_profile
+  echo "Weiter: ./scenario.sh pull-model (lädt $(envval MODEL) in den Hugging-Face-Cache), dann Szenario starten."
+}
+
 cmd_init() {
   mkdir -p secrets && chmod 700 secrets
   if [[ ! -f .env ]]; then
@@ -68,6 +135,7 @@ cmd_init() {
     sed -i "s|^LLMTB_UID=.*|LLMTB_UID=$(id -u)|; s|^LLMTB_GID=.*|LLMTB_GID=$(id -g)|" .env
     chmod 600 .env
     echo "deploy/.env angelegt (chmod 600)."
+    choose_model_profile
     cmd_gpu
     if docker volume inspect "${PROJECT}_pgdata" >/dev/null 2>&1; then
       echo "Achtung: Die Gateway-Datenbank (Volume ${PROJECT}_pgdata) stammt von einer früheren Einrichtung und"
@@ -94,23 +162,30 @@ cmd_init() {
   echo "Einrichtung fertig. Weiter: ./scenario.sh check, dann ./scenario.sh pull (Images ~40 GB + Modell)."
 }
 
-# GPU-Werte aus dem VRAM: Der KV-Cache bleibt fest (KV_CACHE_MEMORY) – so sind Messungen auf Laptop
-# und Server vergleichbar. Angepasst wird nur die Obergrenze, die vLLM beim Start gegen den freien
-# Speicher prüft: ~5 GB je Instanz genügen für Qwen3-0.6B; auf kleinen GPUs höchstens 0,78 (WSL).
+# GPU-Werte aus dem VRAM: Der KV-Cache bleibt fest (KV_CACHE_MEMORY aus dem Modellprofil) – so sind die
+# Szenarien untereinander vergleichbar. Angepasst wird nur die Obergrenze, die vLLM beim Start gegen den
+# freien Speicher prüft: MODEL_GPU_MB je Instanz (Qwen3-8B ~24 GB, Qwen3-0.6B ~5 GB); auf kleinen GPUs
+# höchstens 0,78 (WSL). Ältere .env ohne Modellprofil: Werte von Qwen3-0.6B.
 cmd_gpu() {
   [[ -f .env ]] || die "zuerst ./scenario.sh init"
   local mb; mb=$(gpu_vram_mb || true)
   if [[ -z "$mb" ]]; then
     echo "Keine NVIDIA-GPU gefunden (nvidia-smi) – GPU-Werte in deploy/.env bleiben unverändert."; return 0
   fi
-  local u ud
-  u=$(awk -v m="$mb" 'BEGIN{v=5000/m; if(v>0.78)v=0.78; if(v<0.2)v=0.2; printf "%.2f", v}')
-  ud=$(awk -v m="$mb" 'BEGIN{v=3800/m; if(v>0.45)v=0.45; if(v<0.15)v=0.15; printf "%.2f", v}')
+  local need needmin u ud
+  need=$(envval MODEL_GPU_MB || true); needmin=$(envval MODEL_GPU_MIN_MB || true)
+  need=${need:-5000}; needmin=${needmin:-3800}
+  u=$(awk -v m="$mb" -v n="$need" 'BEGIN{v=n/m; if(v>0.78)v=0.78; if(v<0.2)v=0.2; printf "%.2f", v}')
+  ud=$(awk -v m="$mb" -v n="$needmin" 'BEGIN{v=n/m; if(v>0.45)v=0.45; if(v<0.15)v=0.15; printf "%.2f", v}')
   setenv GPU_MEMORY_UTILIZATION "$u"
   setenv GPU_MEMORY_UTILIZATION_DEDICATED "$ud"
   setenv LLMTB_GPU_VRAM_MB "$mb"
-  echo "GPU: $((mb / 1024)) GB VRAM → GPU_MEMORY_UTILIZATION=$u, je K5-Instanz $ud (KV-Cache fest: $(envval KV_CACHE_MEMORY) Bytes)."
-  (( mb >= 8000 )) || echo "Hinweis: K5 (zwei Instanzen) braucht >= 8 GB VRAM und wird im Gesamtlauf übersprungen."
+  echo "GPU: $((mb / 1024)) GB VRAM, Modell $(envval MODEL) → GPU_MEMORY_UTILIZATION=$u, je K5-Instanz $ud (KV-Cache fest: $(envval KV_CACHE_MEMORY) Bytes)."
+  if (( mb < needmin )); then
+    echo "Achtung: $(envval MODEL) braucht ~$(gb "$needmin") GB VRAM, hier $((mb / 1024)) GB – kleineres Modell: ./scenario.sh modell klein"
+  fi
+  local k5; k5=$(k5_need_mb "$needmin")
+  (( mb >= k5 )) || echo "Hinweis: K5 (zwei Instanzen) braucht mit diesem Modell >= $(gb "$k5") GB VRAM und wird im Gesamtlauf übersprungen."
 }
 
 cmd_check() { python3 "$DEPLOY/ops_check.py" "$@"; }
@@ -372,6 +447,7 @@ case "${1:-}" in
   check) shift; cmd_check "$@";;
   pull) cmd_pull;;
   gpu) cmd_gpu;;
+  modell|model) shift; cmd_modell "${1:-}";;
   run-all) shift; cmd_run_all "$@";;
   list) cmd_list;;
   up) shift; cmd_up "${1:-}";;
@@ -383,5 +459,5 @@ case "${1:-}" in
   pull-model) cmd_pull_model;;
   reset) cmd_reset;;
   detector) shift; cmd_detector "${1:-up}";;
-  *) sed -n '2,27p' "$DEPLOY/$(basename "$0")"; exit 1;;
+  *) awk 'NR == 1 { next } /^#/ { print; next } { exit }' "$DEPLOY/$(basename "$0")"; exit 1;;
 esac

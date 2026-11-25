@@ -35,7 +35,6 @@ CHECK = DEPLOY / "ops_check.py"
 EXPORTS = storage.DATA / "exports"
 PROJECT = os.environ.get("LLMTB_PROJECT", "llmtb")
 START_S = 180          # Schätzung je Szenario: vLLM laden, Gateway, Mandanten
-K5_MIN_MB = 8000
 SERVICES = ("vllm", "vllm-a", "vllm-b", "litellm", "postgres", "wm-detector")
 
 # Aktion → (Argumente für scenario.sh, Beschriftung)
@@ -183,6 +182,12 @@ def vram_mb() -> int | None:
 def scenarios() -> list[dict]:
     """K0–K6 aus deploy/compose/k*.yaml (Kopfkommentar + x-scenario), mit Verfügbarkeit je VRAM."""
     vram = vram_mb()
+    # Bedarf aus dem Modellprofil (deploy/.env, MODEL_GPU_MIN_MB); ältere .env: Qwen3-0.6B
+    try:
+        need_one = int(environment.deploy_env().get("MODEL_GPU_MIN_MB") or 3800)
+    except ValueError:
+        need_one = 3800
+    need_k5 = 2 * need_one + 400
     out = []
     for f in sorted((DEPLOY / "compose").glob("k*.yaml")):
         text = f.read_text(encoding="utf-8")
@@ -207,7 +212,7 @@ def scenarios() -> list[dict]:
             desc = desc[:417].rsplit(" ", 1)[0] + " …"
         exp = re.search(r"^# (?:Erwartung[^:]*|Zweck):\s*(.+(?:\n#[ \t]+\S.*)*)", text, re.M)
         dedicated = "vllm-b:" in text
-        need = K5_MIN_MB if dedicated else 3800
+        need = need_k5 if dedicated else need_one
         ok = vram is None or vram >= need
         out.append({
             "id": field("id"), "name": field("name"), "file": f"compose/{f.name}",

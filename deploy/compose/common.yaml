@@ -7,7 +7,7 @@ services:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.34.0}
     entrypoint: ["/bin/bash", "/opt/llmtb/start-vllm.sh"]
     environment:
-      MODEL: ${MODEL:-Qwen/Qwen3-0.6B}
+      MODEL: ${MODEL:-Qwen/Qwen3-8B}
       SERVED_MODEL_NAME: ${SERVED_MODEL_NAME:-llm}
       MAX_MODEL_LEN: ${MAX_MODEL_LEN:-2048}
       GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION:-0.78}
@@ -111,7 +111,7 @@ services:
     image: ${VLLM_IMAGE:-vllm/vllm-openai:v0.34.0}
     entrypoint: ["python3", "/opt/llmtb/detector_server.py"]
     environment:
-      MODEL: ${MODEL:-Qwen/Qwen3-0.6B}
+      MODEL: ${MODEL:-Qwen/Qwen3-8B}
       HF_HUB_OFFLINE: "1"
       CUDA_VISIBLE_DEVICES: ""
       WATERMARK_KEY_FILE: /run/secrets/watermark_key
