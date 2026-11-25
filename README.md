@@ -73,6 +73,13 @@ wie angegeben, stoppt am Ende und schreibt nach `data/exports/<Datum>/`:
 | `konfigurationsvergleich.tex` | zwei LaTeX-Tabellen (booktabs, passen auf A4): Sicherheit/Leistung und Kosten der Cache-Trennung – neuester Lauf je Szenario |
 | `konfigurationsvergleich.csv` | dieselbe Tabelle für Excel/LibreOffice (Semikolon, Dezimalkomma) |
 | `laeufe.csv` | jeder einzelne Lauf mit allen Kennzahlen |
+| `umgebung.md` / `umgebung.json` | Messumgebung vor dem ersten Szenario: GPU (Speicher, Compute Capability, Treiber, CUDA, Leistungsgrenze, Belegung beim Start), CPU, RAM, Betriebssystem, Docker, Image-Digests, Modell-/KV-Cache-Werte aus `deploy/.env` (ohne Geheimnisse), Git-Commit mit lokalen Änderungen, Code-Hash, Kostenannahmen |
+| `nvidia-smi.txt` | vollständige Ausgabe von `nvidia-smi -q` beim Start |
+| `szenario-konfiguration.md` | je Szenario aus den Container-Logs: `vllm serve`-Kommando, vLLM-Version, tatsächliche KV-Cache-Größe (Tokens), Blockgröße, Warnungen/Fehler; Warnung, wenn der KV-Cache zwischen den Szenarien abweicht |
+| `container-logs.zip` | vollständige Logs aller Container je Szenario, gesichert nach der Messung und vor dem Stoppen; Keys, Passwörter und der Wasserzeichen-Schlüssel sind geschwärzt |
+
+Die Zusammenfassung warnt außerdem, wenn sich der Code während des Gesamtlaufs geändert hat (verschiedene
+Code-Hashes), wenn beim Start nicht eingecheckte Änderungen vorlagen oder fremde Prozesse die GPU belegten.
 
 Die Seite **Konfigurationen** zeigt Sicherheit und Leistung aller Szenarien nebeneinander (Δ % zur
 Referenz, Diagramme) und exportiert dieselbe Tabelle. Das laufende Szenario erkennt die Testplattform
@@ -139,6 +146,7 @@ backend/app/        FastAPI: Lastgenerator, Messung, Ablage, API, SSE
   report.py         Prüfbericht HTML (SVG-Diagramme) und PDF
   matrix.py         Konfigurationsvergleich K0–K6 (Kennzahlen, neuester Lauf je Szenario, CSV/LaTeX/Zusammenfassung)
   ops.py            Steuerung: ruft deploy/scenario.sh auf, Gesamtlauf über alle Szenarien, Export
+  environment.py    Messumgebung (GPU, Treiber, Images, Git-Commit, Code-Hash), Auswertung der Container-Logs
   media.py          Testbilder
 tests/<name>/       ein Ordner pro Test: manifest.json + test.py (run, summarize, estimate)
 frontend/           Svelte + Vite + ECharts
@@ -176,13 +184,18 @@ data/settings.json         Zielwerte, Kostenannahmen, Ampel an/aus
 data/profiles/             Endpunkt-Profile
 data/suites/               eigene Testzusammenstellungen
 data/runs/<datum>_<uhrzeit>_<test>/
-    config.json            Parameter, Seed, Tool-Version, Steckbrief, Netzlatenz, Hinweise
+    config.json            Parameter, Seed, Tool-Version, Steckbrief, Netzlatenz, Hinweise, Szenario;
+                           unter "environment": GPU mit Zustand beim Start, Treiber/CUDA, Prozesse auf der
+                           GPU, OS, CPU, Image-Digests, Git-Commit (+ lokale Änderungen), Code-Hash
     requests.jsonl         eine Zeile pro Anfrage, sofort geschrieben
     progress.jsonl         Zwischenstände pro Laststufe
     summary.json           Kennzahlen und Ampel (wird bei geänderten Einstellungen neu berechnet)
 data/references.json       Referenzläufe der Qualitätstests
 data/reports/              Prüfberichte (HTML, PDF)
-data/exports/<datum>/      Ergebnisse je Gesamtlauf (zusammenfassung.md, .tex, .csv, laeufe.csv)
+data/exports/<datum>/      Ergebnisse je Gesamtlauf (zusammenfassung.md, .tex, .csv, laeufe.csv, umgebung.md,
+                           szenario-konfiguration.md, container-logs.zip, logs/<Szenario>.log)
+data/container-logs/       Container-Logs, automatisch vor jedem `scenario.sh down`/`reset` gesichert
+                           (<Zeit>_<Szenario>.log, Geheimnisse geschwärzt) – auch bei Einzelstarts
 data/testbench.log         Log, wenn die Testplattform mit ./start.sh --hintergrund läuft
 data/quality/cases.jsonl   eigene Kundenaufgaben (optional)
 ```

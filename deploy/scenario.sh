@@ -16,6 +16,8 @@
 #   ./scenario.sh down            alles stoppen (Daten bleiben)
 #   ./scenario.sh status          laufendes Szenario + Container
 #   ./scenario.sh logs [dienst]   Logs (Standard: vllm)
+#   ./scenario.sh save-logs [datei]  Logs aller Dienste sichern, Geheimnisse geschwärzt (Standard:
+#                                 data/container-logs/<Zeit>_<Szenario>.log). Passiert auch vor jedem down.
 #   ./scenario.sh profile         Endpunkt-Profile + Mandanten-Keys in der Testplattform anlegen
 #   ./scenario.sh pull-model      nur das Modell in den Hugging-Face-Cache laden
 #   ./scenario.sh detector up|down  Wasserzeichen-Detektor allein (für Messungen in Szenarien ohne ihn)
@@ -139,7 +141,35 @@ cmd_pull_model() {
     -c "from huggingface_hub import snapshot_download as d; print(d('$model'))"
 }
 
-cmd_down() { docker compose -p "$PROJECT" down --remove-orphans 2>/dev/null || true; rm -f "$ACTIVE"; }
+# Logs aller Dienste des Projekts sichern, bevor `down` die Container (und damit ihre Logs) löscht.
+# Darin stehen u. a. das vllm-serve-Kommando (start-vllm.sh) und die tatsächliche KV-Cache-Größe.
+# Geheimnisse (Keys, Passwörter, Wasserzeichen-Schlüssel) schwärzt redact_logs.py.
+cmd_save_logs() {
+  local ids; ids=$(docker compose -p "$PROJECT" ps -aq 2>/dev/null || true)
+  if [[ -z "$ids" ]]; then
+    [[ -n "${1:-}" ]] && echo "Keine Container im Projekt $PROJECT – keine Logs zu sichern."
+    return 0
+  fi
+  local sid=""
+  [[ -f "$ACTIVE" ]] && sid=$(grep -o '"id": *"[^"]*"' "$ACTIVE" | head -1 | cut -d'"' -f4 || true)
+  sid="${sid:-ohne-szenario}"
+  local out="${1:-$ROOT/data/container-logs/$(date +%Y-%m-%d_%H%M%S)_${sid}.log}"
+  mkdir -p "$(dirname "$out")"
+  {
+    echo "# Container-Logs – Projekt $PROJECT – Szenario $sid – gesichert $(date -Iseconds)"
+    [[ -f "$ACTIVE" ]] && sed 's/^/# /' "$ACTIVE"
+    echo "# docker compose ps:"
+    docker compose -p "$PROJECT" ps -a 2>&1 | sed 's/^/# /'
+    echo "#"
+    docker compose -p "$PROJECT" logs --no-color --timestamps 2>&1
+  } | python3 "$DEPLOY/redact_logs.py" > "$out"
+  echo "Container-Logs gesichert: ${out#"$ROOT/"} ($(wc -l < "$out") Zeilen, Geheimnisse geschwärzt)"
+}
+
+cmd_down() {
+  cmd_save_logs || echo "Warnung: Container-Logs konnten nicht gesichert werden." >&2
+  docker compose -p "$PROJECT" down --remove-orphans 2>/dev/null || true; rm -f "$ACTIVE"
+}
 
 cmd_up() {
   need_env
@@ -210,7 +240,10 @@ cmd_detector() {
   esac
 }
 
-cmd_reset() { docker compose -p "$PROJECT" down --remove-orphans -v 2>/dev/null || true; rm -f "$ACTIVE"; }
+cmd_reset() {
+  cmd_save_logs || echo "Warnung: Container-Logs konnten nicht gesichert werden." >&2
+  docker compose -p "$PROJECT" down --remove-orphans -v 2>/dev/null || true; rm -f "$ACTIVE"
+}
 
 cmd_profile() {
   need_env
@@ -345,9 +378,10 @@ case "${1:-}" in
   down) cmd_down;;
   status) cmd_status;;
   logs) shift; cmd_logs "${1:-}";;
+  save-logs) shift; cmd_save_logs "${1:-}";;
   profile) cmd_profile;;
   pull-model) cmd_pull_model;;
   reset) cmd_reset;;
   detector) shift; cmd_detector "${1:-up}";;
-  *) sed -n '2,25p' "$0"; exit 1;;
+  *) sed -n '2,27p' "$DEPLOY/$(basename "$0")"; exit 1;;
 esac

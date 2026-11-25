@@ -79,6 +79,20 @@ cd llm-testbench
 `run-all -s K0,K1,K4` (Auswahl), `--suite ID`, `--status` (Fortschritt), `--abbrechen`.
 Die Ergebnisse landen wie oben in `data/exports/<Datum>/`.
 
+## Was für die Dokumentation festgehalten wird
+
+Ohne Zutun, für die Beschreibung des Versuchsaufbaus in der Arbeit:
+
+- **Jeder Lauf** (`data/runs/…/config.json`, Feld `environment`): GPU mit Treiber, CUDA, Leistungsgrenze und
+  Zustand beim Start, Prozesse auf der GPU, Betriebssystem, CPU, Image-Digests, Git-Commit (mit lokalen
+  Änderungen) und ein Code-Hash über Tests, Backend und Deploy-Dateien.
+- **Jeder Gesamtlauf** (`data/exports/<Datum>/`): `umgebung.md` (Tabelle zum Übernehmen), `nvidia-smi.txt`,
+  `szenario-konfiguration.md` (vllm-serve-Kommando, KV-Cache, Blockgröße je Szenario) und `container-logs.zip`.
+- **Jedes Stoppen eines Szenarios** sichert die Container-Logs nach `data/container-logs/` (Geheimnisse geschwärzt).
+
+Empfehlung: vor dem Gesamtlauf alles committen (`git status` sauber) und den Code bis zum Ende nicht ändern –
+die Zusammenfassung warnt sonst.
+
 ## Dauer
 
 | Schritt | Dauer |

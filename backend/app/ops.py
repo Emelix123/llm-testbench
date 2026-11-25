@@ -22,8 +22,10 @@ import subprocess
 import sys
 import traceback
 import uuid
+import zipfile
 from datetime import datetime
 
+from . import environment
 from . import matrix as mx
 from . import storage
 
@@ -287,6 +289,23 @@ class Gesamtlauf:
         self.export: dict | None = None
         self.error = ""
         self.task: asyncio.Task | None = None
+        # Messumgebung, aufgenommen vor dem ersten Szenario (environment.full_snapshot)
+        self.environment: dict | None = None
+        self.nvidia_smi_q = ""
+
+    @property
+    def log_dir(self):
+        return EXPORTS / self.id / "logs"
+
+    async def save_logs(self, st: dict, suffix: str = "") -> None:
+        """Container-Logs des laufenden Szenarios in den Export (vor dem Stoppen, Geheimnisse geschwärzt)."""
+        path = self.log_dir / f"{st['scenario']}{suffix}.log"
+        try:
+            job = await ops.run("save-logs", ["save-logs", str(path)], f"Gesamtlauf: Logs {st['scenario']} sichern")
+            if job.code == 0 and path.exists():
+                st["log"] = path.name
+        except RuntimeError as e:
+            st["log_error"] = str(e)
 
     def snapshot(self) -> dict:
         b = self.batch
@@ -300,6 +319,12 @@ class Gesamtlauf:
     async def execute(self, manager) -> None:
         final = "fertig"
         try:
+            self.phase = "Messumgebung festhalten"
+            try:
+                self.environment, self.nvidia_smi_q = await asyncio.to_thread(environment.full_snapshot)
+            except Exception as e:  # noqa: BLE001
+                traceback.print_exc()
+                self.environment = {"error": f"{type(e).__name__}: {e}"}
             for st in self.steps:
                 sc = st["scenario"]
                 if self.cancel_event.is_set():
@@ -316,6 +341,7 @@ class Gesamtlauf:
                     else:
                         st["status"], st["text"] = "fehler", "Start fehlgeschlagen – siehe Ausgabe"
                         st["error_tail"] = job.lines[-15:]
+                    await self.save_logs(st, "-startfehler")
                     st["finished_at"] = now_iso()
                     continue
                 prof = storage.get_profile(self.profile_id)
@@ -342,6 +368,9 @@ class Gesamtlauf:
                                     "status": r.get("status"), "verdict": _verdict(r.get("run_id"))} for r in b.runs]
                     if b.state != "fertig":
                         ok = False
+                # Logs sichern, solange die Container noch laufen (das nächste `up` stoppt sie)
+                self.phase = f"{sc} Logs sichern"
+                await self.save_logs(st)
                 done = sum(1 for r in st["runs"] if r.get("status") == "fertig")
                 if self.cancel_event.is_set():
                     st["status"] = "abgebrochen"
@@ -411,34 +440,83 @@ def write_export(g: Gesamtlauf) -> dict:
     data = mx.build(since=g.started_at)
     data["groups"] = [x for x in data["groups"] if x.get("scenario") in scen and x.get("profile_id") == g.profile_id]
     rows = [r for r in mx.runs_long(since=g.started_at, scenarios=scen)]
-    active = storage.read_json(DEPLOY / ".active-scenario.json", {}) or {}
-    gpu = (ops.last_check or {}).get("gpus") or []
+    env = g.environment or {}
+    model = (env.get("deploy_env") or {}).get("MODEL")
+    gpu_line = environment.gpu_line(env)
+    if not gpu_line:   # Fallback: Systemprüfung der Oberfläche
+        gpu = (ops.last_check or {}).get("gpus") or []
+        gpu_line = f"GPU {gpu[0]['name']} ({gpu[0]['total_mb'] / 1024:.1f} GB)" if gpu else None
     notes = [f"Gesamtlauf {g.id}: {g.started_at} bis {g.finished_at or now_iso()}",
              f"Suite „{g.suite_name}“, {g.repetitions} Wiederholung(en) je Szenario, Profil {g.profile_id}",
              "Szenarien: " + ", ".join(f"{s['scenario']} ({s['status']})" for s in g.steps),
-             f"Testplattform {storage.TOOL_VERSION}"
-             + (f", GPU {gpu[0]['name']} ({gpu[0]['total_mb'] / 1024:.1f} GB)" if gpu else "")
-             + (f", Modell {active.get('model')}" if active.get("model") else ""),
+             f"Testplattform {storage.TOOL_VERSION}" + (f", {gpu_line}" if gpu_line else "")
+             + (f", Modell {model}" if model else ""),
+             f"Code-Stand: {environment.code_line(env)}" if env.get("code_sha256") else
+             "Code-Stand: nicht erfasst",
+             "Messumgebung im Detail: umgebung.md; Startkommando und KV-Cache je Szenario: szenario-konfiguration.md; "
+             "vollständige Container-Logs: container-logs.zip.",
              "konfigurationsvergleich.csv/.tex: neuester Lauf je Szenario und Test; diese Zusammenfassung: alle Wiederholungen."]
     if mx.cost_note():
         notes.append(mx.cost_note() + ".")
-    def on_battery(run_id: str) -> bool:
-        cfg = storage.read_json(storage.RUNS / run_id / "config.json", {}) or {}
-        return bool(((cfg.get("client") or {}).get("power") or {}).get("on_battery"))
-    akku = sum(1 for r in rows if on_battery(r["run_id"]))
+    warnings: list[str] = []
+
+    def run_cfg(run_id: str) -> dict:
+        return storage.read_json(storage.RUNS / run_id / "config.json", {}) or {}
+    cfgs = {r["run_id"]: run_cfg(r["run_id"]) for r in rows}
+    akku = sum(1 for c in cfgs.values() if ((c.get("client") or {}).get("power") or {}).get("on_battery"))
     if akku:
-        notes.insert(0, f"**Achtung: {akku} von {len(rows)} Läufen auf Akku gemessen** – CPU und GPU takten herunter, "
+        warnings.append(f"**Achtung: {akku} von {len(rows)} Läufen auf Akku gemessen** – CPU und GPU takten herunter, "
                         "die Werte sind langsamer. Für die Arbeit am Netzteil wiederholen.")
+    hashes = {(c.get("environment") or {}).get("code_sha256") for c in cfgs.values()} - {None}
+    if len(hashes) > 1:
+        warnings.append(f"**Achtung: Der Code hat sich während des Gesamtlaufs geändert** ({len(hashes)} verschiedene "
+                        "Code-Hashes in den Läufen). Die Läufe sind nicht mit demselben Verfahren gemessen.")
+    if (env.get("git") or {}).get("dirty"):
+        warnings.append("**Hinweis: nicht eingecheckte Änderungen am Code** beim Start (Liste in umgebung.md). "
+                        "Für die Arbeit besser von einem sauberen Commit aus messen.")
+    foreign = env.get("gpu_processes") or []
+    if foreign:
+        warnings.append("Hinweis: Beim Start belegten Prozesse die GPU (" +
+                        ", ".join(f"{p.get('name')} {p.get('used_mb')} MiB" for p in foreign) +
+                        "). War das ein noch laufendes Szenario, ist es unkritisch (das erste `up` stoppt es); "
+                        "sonst verfälscht fremde Last die Zeitmessungen.")
+    # Container-Logs: auswerten (Startkommando, KV-Cache) und für den Download bündeln
+    parsed, missing = {}, []
+    for st in g.steps:
+        p = g.log_dir / f"{st['scenario']}.log"
+        if p.exists():
+            parsed[st["scenario"]] = environment.parse_container_log(p.read_text(encoding="utf-8", errors="replace"))
+        elif (g.log_dir / f"{st['scenario']}-startfehler.log").exists():
+            missing.append(f"{st['scenario']} (Start fehlgeschlagen, Log: {st['scenario']}-startfehler.log)")
+        elif st.get("started_at"):
+            missing.append(st["scenario"])
+    kv_warn = environment.kv_consistency(parsed)
+    if kv_warn:
+        warnings.append(f"**Achtung:** {kv_warn} Details: szenario-konfiguration.md.")
     files = {
-        "zusammenfassung.md": mx.summary_md(rows, f"Konfigurationsvergleich – Gesamtlauf {g.id}", notes),
+        "zusammenfassung.md": mx.summary_md(rows, f"Konfigurationsvergleich – Gesamtlauf {g.id}", warnings + notes),
         "konfigurationsvergleich.tex": mx.to_latex(data),
         "konfigurationsvergleich.csv": "﻿" + mx.to_csv(data),
         "laeufe.csv": "﻿" + mx.runs_csv(rows),
+        "szenario-konfiguration.md": environment.render_scenario_md(
+            parsed, f"Konfiguration je Szenario – Gesamtlauf {g.id}", missing),
     }
+    if g.environment:
+        files["umgebung.md"] = environment.render_md(env, f"Messumgebung – Gesamtlauf {g.id}")
+        files["umgebung.json"] = json.dumps(env, indent=2, ensure_ascii=False)
+    if g.nvidia_smi_q:
+        files["nvidia-smi.txt"] = g.nvidia_smi_q + "\n"
     for name, text in files.items():
         (d / name).write_text(text, encoding="utf-8")
+    names = list(files)
+    logs = sorted(g.log_dir.glob("*.log")) if g.log_dir.exists() else []
+    if logs:
+        with zipfile.ZipFile(d / "container-logs.zip", "w", zipfile.ZIP_DEFLATED) as z:
+            for p in logs:
+                z.write(p, f"container-logs/{p.name}")
+        names.append("container-logs.zip")
     return {"id": g.id, "dir": str(d.relative_to(storage.ROOT)) if storage.ROOT in d.parents else str(d),
-            "files": [*files, "gesamtlauf.json"], "runs": len(rows)}
+            "files": [*names, "gesamtlauf.json"], "runs": len(rows)}
 
 
 def list_exports() -> list[dict]:
