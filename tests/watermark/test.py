@@ -128,6 +128,27 @@ def _rate(rows):
     return (sum(1 for r in v if r["is_watermarked"]) / len(v)) if v else None, len(v)
 
 
+def _ci_txt(rate, n) -> str:
+    """95%-KI nach Wilson als Text, z. B. „57–93 %“."""
+    if rate is None or not n:
+        return "–"
+    ci = stats.wilson_ci(round(rate * n), n)
+    return f"{stats.fmt_num(100 * ci[0], 0)}–{stats.fmt_num(100 * ci[1], 0)} %" if ci else "–"
+
+
+def optout_blocked(opt, std_ref, fpr) -> bool | None:
+    """Wirkt watermarking=false? Vergleich mit den beiden Bezugsgrößen statt mit einer festen Schwelle.
+
+    Greift enforce, sind die Opt-out-Texte genauso markiert wie normale Texte GLEICHER Länge (Erkennung
+    ≈ std_ref). Wirkt das Opt-out, sind sie unmarkiert (Erkennung ≈ Fehlalarmrate fpr). Entschieden wird
+    nach der näheren Bezugsgröße (Mittelpunktregel). Früher: Vergleich mit min_rate (90 %) – das hängt an
+    der Empfindlichkeit des Detektors und meldete „Opt-out möglich“, obwohl enforce griff.
+    """
+    if opt is None or std_ref is None:
+        return None
+    return opt >= (std_ref + (fpr or 0.0)) / 2
+
+
 def summarize(recs, stages, cfg, settings):
     p = cfg["params"]
     det = cfg.get("detector") or {}
@@ -143,7 +164,7 @@ def summarize(recs, stages, cfg, settings):
         rs = [r for r in std if r["length"] == L]
         rate, n = _rate(rs)
         pv = [r["p_value"] for r in rs if r.get("p_value") is not None]
-        rows.append([L, n, stats.fmt_pct(100 * rate, 0) if rate is not None else "–",
+        rows.append([L, n, (stats.fmt_pct(100 * rate, 0) + f" ({_ci_txt(rate, n)})") if rate is not None else "–",
                      f"{statistics.median(pv):.2g}" if pv else "–",
                      stats.fmt_num(statistics.median([r.get("num_scored_tokens") or 0 for r in rs]), 0) if rs else "–"])
         if rate is not None:
@@ -151,23 +172,31 @@ def summarize(recs, stages, cfg, settings):
     long_rows = [r for r in std if (r["length"] or 0) >= 200] or std
     rate_long, n_long = _rate(long_rows)
     fpr, n_h = _rate([r for r in D if r["cond"] == "human"])
-    opt, n_o = _rate([r for r in D if r["cond"] == "opt_out"])
+    opt_rows = [r for r in D if r["cond"] == "opt_out"]
+    opt, n_o = _rate(opt_rows)
+    ref_len = opt_rows[0]["length"] if opt_rows else None
+    std_ref, n_ref = _rate([r for r in std if r["length"] == ref_len]) if ref_len else (None, 0)
+    blocked = optout_blocked(opt, std_ref, fpr)
     gre, n_g = _rate([r for r in D if r["cond"] == "greedy"])
 
     ok_rate = rate_long is not None and rate_long >= float(p["min_rate"])
     if rate_long is None or rate_long < 0.5:
         verdict = "rot"
-    elif ok_rate and not fpr and (opt is None or opt >= float(p["min_rate"])):
+    elif ok_rate and not fpr and blocked is not False:
         verdict = "gruen"
     else:
         verdict = "gelb"
     sc = cfg.get("deploy_scenario") or {}
     head = (f"{'Szenario ' + sc['id'] + ': ' if sc.get('id') else ''}Wasserzeichen ab 200 Tokens in "
-            f"{stats.fmt_pct(100 * (rate_long or 0), 0)} der Texte nachgewiesen (n={n_long}), Fehlalarme bei "
+            f"{stats.fmt_pct(100 * (rate_long or 0), 0)} der Texte nachgewiesen (n={n_long}, 95%-KI "
+            f"{_ci_txt(rate_long, n_long)}), Fehlalarme bei "
             f"Menschentexten {stats.fmt_pct(100 * (fpr or 0), 0)} (n={n_h}).")
     if opt is not None:
-        head += (" Opt-out per watermarking=false " + ("wirkungslos (enforce greift)." if opt >= float(p["min_rate"])
-                 else f"möglich – nur {stats.fmt_pct(100 * opt, 0)} markiert."))
+        ref_txt = (f"normale Texte gleicher Länge ({ref_len} Tokens): {stats.fmt_pct(100 * std_ref, 0)}"
+                   if std_ref is not None else "keine Vergleichstexte gleicher Länge")
+        head += (f" Opt-out per watermarking=false: {stats.fmt_pct(100 * opt, 0)} markiert ({ref_txt}) – "
+                 + ("wirkungslos, enforce greift." if blocked else
+                    "möglich, die Texte sind unmarkiert." if blocked is False else "nicht entscheidbar."))
     if gre is not None:
         head += f" greedy (temperature 0): {stats.fmt_pct(100 * gre, 0)} markiert (erwartet: 0 – dokumentierte Grenze)."
     if rate_long is not None and rate_long < 0.5:
@@ -177,12 +206,13 @@ def summarize(recs, stages, cfg, settings):
     gen = [r for r in recs if r.get("stage") == "gen" and r.get("cond") == "standard"]
     agg = stats.aggregate(gen, settings["slo"]) if gen else None
     tables = [
-        {"title": "Erkennung je Textlänge", "columns": ["Output-Tokens", "Texte", "erkannt", "p-Wert (Median)",
+        {"title": "Erkennung je Textlänge", "columns": ["Output-Tokens", "Texte", "erkannt (95%-KI)", "p-Wert (Median)",
                                                          "bewertete Tokens (Median)"], "rows": rows},
         {"title": "Gegen- und Sonderfälle", "columns": ["Fall", "Texte", "als markiert erkannt", "Erwartung"],
          "rows": [["Menschentexte (Fehlalarme)", n_h, stats.fmt_pct(100 * (fpr or 0), 0), "0 %"],
                   ["Opt-out watermarking=false", n_o, stats.fmt_pct(100 * opt, 0) if opt is not None else "–",
-                   "wie Standard (enforce)"],
+                   f"wie normale Texte gleicher Länge ({stats.fmt_pct(100 * std_ref, 0)}, n={n_ref}) bei enforce; "
+                   "≈ Fehlalarmrate, wenn Opt-out wirkt" if std_ref is not None else "wie Standard (enforce)"],
                   ["greedy, temperature 0", n_g, stats.fmt_pct(100 * gre, 0) if gre is not None else "–",
                    "0 % (kein Gumbel-Sampling)"]]},
     ]
@@ -200,7 +230,9 @@ def summarize(recs, stages, cfg, settings):
                              "text": f"Fehlalarme {stats.fmt_pct(100 * (fpr or 0), 0)}"}},
         "matrix": {"wm_detect_rate": round(100 * rate_long, 1) if rate_long is not None else None,
                    "wm_fpr": round(100 * fpr, 1) if fpr is not None else None,
-                   "wm_optout_blocked": (opt >= float(p["min_rate"])) if opt is not None else None,
+                   "wm_detect_ci": _ci_txt(rate_long, n_long) if rate_long is not None else None,
+                   "wm_optout_blocked": blocked,
+                   "wm_optout_rate": round(100 * opt, 1) if opt is not None else None,
                    "wm_greedy_rate": round(100 * gre, 1) if gre is not None else None},
         "charts": charts, "tables": tables,
         "method_note": ("Detektor: vllm.v1.watermarking.GumbelWatermarkDetector mit demselben Schlüssel und context_width "

@@ -462,7 +462,8 @@ def write_export(g: Gesamtlauf) -> dict:
              "Code-Stand: nicht erfasst",
              "Messumgebung im Detail: umgebung.md; Startkommando und KV-Cache je Szenario: szenario-konfiguration.md; "
              "vollständige Container-Logs: container-logs.zip.",
-             "konfigurationsvergleich.csv/.tex: neuester Lauf je Szenario und Test; diese Zusammenfassung: alle Wiederholungen."]
+             "konfigurationsvergleich.csv/.tex: neuester gültiger Lauf je Szenario und Test; diese Zusammenfassung und "
+             "konfigurationsvergleich-mittel.tex: alle gültigen Wiederholungen (Mittelwert ± Standardabweichung)."]
     if mx.cost_note():
         notes.append(mx.cost_note() + ".")
     warnings: list[str] = []
@@ -478,6 +479,19 @@ def write_export(g: Gesamtlauf) -> dict:
     if len(hashes) > 1:
         warnings.append(f"**Achtung: Der Code hat sich während des Gesamtlaufs geändert** ({len(hashes)} verschiedene "
                         "Code-Hashes in den Läufen). Die Läufe sind nicht mit demselben Verfahren gemessen.")
+    if env.get("backend_stale") or any((c.get("environment") or {}).get("backend_stale") for c in cfgs.values()):
+        warnings.append("**Achtung: Die Testplattform lief mit älterem Code, als auf der Platte liegt** (z. B. nach "
+                        "`git pull` nicht neu gestartet). Commit und Code-Hash beschreiben dann nicht den gemessenen "
+                        "Stand. Neu starten (`./start.sh --stopp`, `run-all` startet sie neu) und wiederholen.")
+    invalid = [r for r in rows if r.get("invalid")]
+    if invalid:
+        warnings.append(f"**Achtung: {len(invalid)} Lauf/Läufe ungültig** – ohne Kennzahlen, fehlen in den "
+                        "Mittelwerten (kleineres n): " + "; ".join(
+                            f"{r['scenario']} {r['test']} ({r['run_id']}): {r['invalid']}" for r in invalid))
+    partial = [r for r in rows if r.get("invalid_partial")]
+    if partial:
+        warnings.append("Hinweis: Teilmessung ungültig – " + "; ".join(
+            f"{r['scenario']} {r['test']}: {r['invalid_partial']}" for r in partial))
     if (env.get("git") or {}).get("dirty"):
         warnings.append("**Hinweis: nicht eingecheckte Änderungen am Code** beim Start (Liste in umgebung.md). "
                         "Für die Arbeit besser von einem sauberen Commit aus messen.")
@@ -505,6 +519,7 @@ def write_export(g: Gesamtlauf) -> dict:
     files = {
         "zusammenfassung.md": mx.summary_md(rows, f"Konfigurationsvergleich – Gesamtlauf {g.id}", warnings + notes),
         "konfigurationsvergleich.tex": mx.to_latex(data),
+        "konfigurationsvergleich-mittel.tex": mx.to_latex_mean(rows),
         "konfigurationsvergleich.csv": "﻿" + mx.to_csv(data),
         "laeufe.csv": "﻿" + mx.runs_csv(rows),
         "szenario-konfiguration.md": environment.render_scenario_md(

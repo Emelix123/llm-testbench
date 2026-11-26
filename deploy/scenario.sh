@@ -96,33 +96,58 @@ choose_gpu() {
 
 # ------------------------------------------------------------------ Modellprofile
 # Ein Profil legt Modell, KV-Cache und Speicherbedarf fest. Der KV-Cache steht in Bytes, ist aber so
-# gewählt, dass er in TOKENS in jedem Profil gleich groß ist: ~6 540 Tokens je Instanz, in K5 ~4 360.
+# gewählt, dass er in TOKENS in jedem Profil gleich groß ist: ~6 540 Tokens je Instanz.
 # Darauf sind die Tests ausgelegt (z. B. „Kosten der Cache-Trennung“: Vorlage 512 Tokens × 1 … 30 Mandanten).
 #   Bytes je Token (bf16) = 2 (K und V) × Schichten × KV-Köpfe × Kopfdimension × 2 Byte
 #   Qwen3-0.6B: 2 × 28 × 8 × 128 × 2 = 114 688 B  →  750 MB ≈ 6 540 Tokens,  500 MB ≈ 4 360 Tokens
-#   Qwen3-8B:   2 × 36 × 8 × 128 × 2 = 147 456 B  →  965 MB ≈ 6 540 Tokens,  643 MB ≈ 4 360 Tokens
-# Felder: MODEL | KV_CACHE_MEMORY | KV_CACHE_MEMORY_DEDICATED | MODEL_GPU_MB | MODEL_GPU_MIN_MB
+#   Qwen3-8B:   2 × 36 × 8 × 128 × 2 = 147 456 B  →  965 MB ≈ 6 540 Tokens
+# K5 (zwei Instanzen auf einer GPU):
+#   standard  jede Instanz genau wie K0 (gleicher KV-Cache, CUDA-Graphen an) – K5 unterscheidet sich von
+#             K0 nur durch die Trennung; so misst der Vergleich die Kosten der Trennung und nichts anderes.
+#   klein     Sparbetrieb für 8–24-GB-GPUs: kleinerer KV-Cache, --enforce-eager (ohne CUDA-Graphen) und
+#             --max-num-seqs 16. Die Leistungswerte von K5 sind dann NICHT mit K0 vergleichbar.
+# Felder: MODEL | KV_CACHE_MEMORY | KV_CACHE_MEMORY_DEDICATED | MODEL_GPU_MB | MODEL_GPU_MIN_MB | K5_ENGINE_ARGS
 #   MODEL_GPU_MB      Speicher, den eine Instanz anfordert (daraus GPU_MEMORY_UTILIZATION)
 #   MODEL_GPU_MIN_MB  Mindestbedarf je Instanz (Gewichte + KV-Cache + Puffer); K5 braucht 2 × davon + 400 MB
+#   K5_ENGINE_ARGS    zusätzliche vLLM-Optionen nur für die beiden K5-Instanzen
 declare -A MODELL_PROFILE=(
-  [standard]="Qwen/Qwen3-8B|965000000|643000000|24000|22000"
-  [klein]="Qwen/Qwen3-0.6B|750000000|500000000|5000|3800"
+  [standard]="Qwen/Qwen3-8B|965000000|965000000|24000|22000|"
+  [klein]="Qwen/Qwen3-0.6B|750000000|500000000|5000|3800|--enforce-eager --max-num-seqs 16"
 )
+PROFILE_KEYS=(MODEL KV_CACHE_MEMORY KV_CACHE_MEMORY_DEDICATED MODEL_GPU_MB MODEL_GPU_MIN_MB K5_ENGINE_ARGS)
 profile_field() { local f; IFS='|' read -r -a f <<< "${MODELL_PROFILE[$1]}"; echo "${f[$2]}"; }
 k5_need_mb() { echo $(( 2 * $1 + 400 )); }
 gb() { echo $(( ($1 + 1023) / 1024 )); }   # MB → GB, aufgerundet
 
 apply_model_profile() {
   [[ -n "${MODELL_PROFILE[$1]:-}" ]] || die "unbekanntes Modellprofil „$1“ (verfügbar: standard, klein)"
-  local model kv kvd need needmin
-  IFS='|' read -r model kv kvd need needmin <<< "${MODELL_PROFILE[$1]}"
+  local model kv kvd need needmin k5args
+  IFS='|' read -r model kv kvd need needmin k5args <<< "${MODELL_PROFILE[$1]}"
   setenv MODELL_PROFIL "$1"
   setenv MODEL "$model"
   setenv KV_CACHE_MEMORY "$kv"
   setenv KV_CACHE_MEMORY_DEDICATED "$kvd"
   setenv MODEL_GPU_MB "$need"
   setenv MODEL_GPU_MIN_MB "$needmin"
-  echo "Modellprofil „$1“: $model – KV-Cache $kv Bytes (~6 540 Tokens), in K5 je Instanz $kvd Bytes (~4 360 Tokens)."
+  setenv K5_ENGINE_ARGS "$k5args"
+  echo "Modellprofil „$1“: $model – KV-Cache $kv Bytes (~6 540 Tokens); K5 je Instanz $kvd Bytes" \
+       "$([[ -n "$k5args" ]] && echo "mit $k5args (Sparbetrieb)" || echo "und Engine-Einstellungen wie K0")."
+}
+
+# Weicht deploy/.env vom eingestellten Modellprofil ab (z. B. weil sich ein Profil mit einem Update geändert
+# hat oder ein Wert von Hand verstellt wurde)? Gibt die Abweichungen aus und liefert dann 1.
+profile_drift() {
+  local prof; prof=$(envval MODELL_PROFIL || true)
+  [[ -n "$prof" && -n "${MODELL_PROFILE[$prof]:-}" ]] || return 0
+  local vals i cur diff=""
+  IFS='|' read -r -a vals <<< "${MODELL_PROFILE[$prof]}"
+  for i in "${!PROFILE_KEYS[@]}"; do
+    cur=$(envval "${PROFILE_KEYS[$i]}" || true)
+    [[ "$cur" == "${vals[$i]:-}" ]] || diff+="  ${PROFILE_KEYS[$i]}: deploy/.env „${cur}“ – Profil „${prof}“: „${vals[$i]:-}“"$'\n'
+  done
+  [[ -z "$diff" ]] && return 0
+  printf "%s" "$diff"
+  return 1
 }
 
 # init: Profil nach VRAM – „standard“, sobald alle Szenarien einschließlich K5 hineinpassen
@@ -307,6 +332,11 @@ cmd_up() {
   local f; f=$(scenario_file "$id")
   local sid sname; sid=$(xfield "$f" id); sname=$(xfield "$f" name)
   echo "== Starte $sid – $sname ($f)"
+  local drift; drift=$(profile_drift) || {
+    echo "Warnung: deploy/.env weicht vom Modellprofil ab – die Messung entspricht nicht dem dokumentierten Profil:"
+    printf "%s\n" "$drift"
+    echo "         Angleichen: ./scenario.sh modell $(envval MODELL_PROFIL || true)"
+  }
   cmd_down
   if grep -q 'HF_HUB_OFFLINE: "1"' "$f" && grep -q 'internal: true' "$f"; then
     local cache; cache=$(envval HF_CACHE); cache="${cache/#\~/$HOME}"
@@ -428,13 +458,44 @@ PY
 }
 
 # ------------------------------------------------------------------ Gesamtlauf (über die Testplattform)
-ensure_bench() {
-  curl -sf "$BENCH/api/status" >/dev/null 2>&1 && return 0
-  echo "Testplattform läuft nicht – starte sie im Hintergrund (Log: data/testbench.log) …"
+start_bench() {
+  echo "Starte die Testplattform im Hintergrund (Log: data/testbench.log) …"
   "$ROOT/start.sh" --hintergrund
   local i
   for i in $(seq 1 90); do curl -sf "$BENCH/api/status" >/dev/null 2>&1 && return 0; sleep 2; done
   die "Testplattform startet nicht – siehe data/testbench.log"
+}
+
+# Läuft die Testplattform noch mit älterem Code als auf der Platte (z. B. nach git pull)? Python hat die
+# Module beim Start geladen – sie würde mit dem alten Stand messen, während Commit und Code-Hash im
+# Export den neuen dokumentieren. Vor einem neuen Gesamtlauf darum neu starten (nur wenn sie frei ist).
+restart_if_stale() {
+  local cs st
+  cs=$(curl -sf "$BENCH/api/code-stand" 2>/dev/null || true)
+  if [[ -n "$cs" ]] && python3 -c 'import json,sys; sys.exit(1 if json.load(sys.stdin).get("stale") else 0)' <<< "$cs"; then
+    return 0   # aktueller Code
+  fi
+  # kein Endpunkt = Testplattform älter als diese Prüfung → ebenfalls veraltet
+  st=$(curl -sf "$BENCH/api/status" 2>/dev/null || true)
+  if python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("running") or d.get("gesamtlauf")=="laeuft" or d.get("ops_busy") else 1)' <<< "$st" 2>/dev/null; then
+    die "Die Testplattform läuft mit älterem Code und ist gerade beschäftigt – erst nach dem Ende neu starten (./start.sh --stopp)."
+  fi
+  echo "Die Testplattform läuft noch mit älterem Code als auf der Platte (z. B. nach git pull) – starte sie neu,"
+  echo "damit die Messung den aktuellen Stand nutzt."
+  [[ -f "$ROOT/data/testbench.pid" ]] || die "Sie läuft nicht im Hintergrund (vermutlich ./start.sh in einem Terminal) – dort mit Strg+C beenden, dann erneut starten."
+  "$ROOT/start.sh" --stopp
+  local i
+  for i in $(seq 1 30); do curl -sf "$BENCH/api/status" >/dev/null 2>&1 || break; sleep 1; done
+  start_bench
+}
+
+ensure_bench() {   # $1 = fresh: vor einem neuen Gesamtlauf auf aktuellen Code prüfen
+  if curl -sf "$BENCH/api/status" >/dev/null 2>&1; then
+    [[ "${1:-}" == fresh ]] && restart_if_stale
+    return 0
+  fi
+  echo "Testplattform läuft nicht."
+  start_bench
 }
 
 cmd_run_all() {
@@ -449,7 +510,19 @@ cmd_run_all() {
       *) die "unbekannte Option $1 (erlaubt: -s K0,K1 · -n 3 · --suite ID · --status · --abbrechen)";;
     esac
   done
-  ensure_bench
+  if [[ "$mode" == start ]]; then
+    local drift; drift=$(profile_drift) || {
+      if [[ "${LLMTB_PROFIL_PRUEFUNG:-an}" != aus ]]; then
+        echo "deploy/.env weicht vom Modellprofil „$(envval MODELL_PROFIL)“ ab:" >&2
+        printf "%s\n" "$drift" >&2
+        die "Angleichen mit ./deploy/scenario.sh modell $(envval MODELL_PROFIL) (oder bewusst so lassen: LLMTB_PROFIL_PRUEFUNG=aus voranstellen)."
+      fi
+      echo "Hinweis: deploy/.env weicht vom Modellprofil ab (LLMTB_PROFIL_PRUEFUNG=aus) – gewollt?"
+    }
+    ensure_bench fresh
+  else
+    ensure_bench
+  fi
   python3 - "$BENCH" "$mode" "$scen" "$reps" "$suite" <<'PY'
 import json, sys, time, urllib.request, urllib.error
 base, mode, scen, reps, suite = sys.argv[1:6]

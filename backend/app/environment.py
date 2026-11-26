@@ -36,7 +36,7 @@ DEPLOY = ROOT / "deploy"
 # Nur diese Werte aus deploy/.env werden übernommen – alles andere kann geheim sein.
 DEPLOY_ENV_PUBLIC = ("VLLM_IMAGE", "LITELLM_IMAGE", "POSTGRES_IMAGE", "LLMTB_GPU", "MODELL_PROFIL", "MODEL", "SERVED_MODEL_NAME",
                      "MAX_MODEL_LEN", "KV_CACHE_MEMORY", "GPU_MEMORY_UTILIZATION", "KV_CACHE_MEMORY_DEDICATED",
-                     "GPU_MEMORY_UTILIZATION_DEDICATED", "MODEL_GPU_MB", "MODEL_GPU_MIN_MB", "TENANT_POOL_SIZE",
+                     "GPU_MEMORY_UTILIZATION_DEDICATED", "K5_ENGINE_ARGS", "MODEL_GPU_MB", "MODEL_GPU_MIN_MB", "TENANT_POOL_SIZE",
                      "LLMTB_GPU_VRAM_MB")
 
 # Dateien, deren Inhalt das Messverfahren bestimmt (Code-Hash). data/ und Geheimnisse nie.
@@ -254,6 +254,17 @@ def code_sha256() -> str:
     return h.hexdigest()[:16]
 
 
+# Code-Stand, mit dem DIESER Prozess gestartet wurde. Python lädt die Module beim Start; ein späteres
+# `git pull` ändert die Dateien, aber nicht den laufenden Code. Weicht der Hash auf der Platte davon ab,
+# misst die Testplattform mit altem Code, während Commit und Code-Hash den neuen dokumentieren würden.
+STARTUP_CODE_SHA256 = code_sha256()
+
+
+def code_state() -> dict:
+    disk = code_sha256()
+    return {"startup": STARTUP_CODE_SHA256, "disk": disk, "stale": disk != STARTUP_CODE_SHA256}
+
+
 # ======================================================================= Snapshots
 
 def run_snapshot(local_endpoint: bool | None = None) -> dict:
@@ -273,7 +284,9 @@ def run_snapshot(local_endpoint: bool | None = None) -> dict:
         "python": sys.version.split()[0],
         "images": images(env),
         "git": git_info(),
-        "code_sha256": code_sha256(),
+        "code_sha256": (cs := code_state())["disk"],
+        "backend_code_sha256": cs["startup"],
+        "backend_stale": cs["stale"],
         "tool_version": storage.TOOL_VERSION,
     }
     return snap
@@ -331,7 +344,10 @@ def code_line(snap: dict) -> str:
         s += f", {gi['changed_count']} lokale Änderung(en)" if gi.get("dirty") else ", ohne lokale Änderungen"
     else:
         s = "kein Git-Repository"
-    return s + f", Code-Hash {snap.get('code_sha256')}"
+    s += f", Code-Hash {snap.get('code_sha256')}"
+    if snap.get("backend_stale"):
+        s += f" – ACHTUNG: Testplattform lief mit älterem Code (Hash beim Start {snap.get('backend_code_sha256')})"
+    return s
 
 
 def render_md(snap: dict, title: str) -> str:
@@ -384,6 +400,8 @@ def render_md(snap: dict, title: str) -> str:
     for k in DEPLOY_ENV_PUBLIC:
         if e.get(k) not in (None, ""):
             out.append(f"| `{k}` | {e[k]} |")
+        elif k == "K5_ENGINE_ARGS" and k in e:
+            out.append(f"| `{k}` | leer – K5-Instanzen laufen mit denselben Engine-Einstellungen wie K0 |")
     out += [f"| Quelle | {e.get('_source', '–')} |", ""]
     gi = snap.get("git") or {}
     out += ["## Code-Stand", "", "| | |", "|---|---|"]
@@ -395,6 +413,8 @@ def render_md(snap: dict, title: str) -> str:
     else:
         out.append("| Commit | kein Git-Repository |")
     out += [f"| Code-Hash (Tests, Backend, Deploy) | `{snap.get('code_sha256')}` |",
+            f"| Code der laufenden Testplattform | " + (f"**älter** (`{snap.get('backend_code_sha256')}`) – neu starten!"
+                                                     if snap.get("backend_stale") else "identisch") + " |",
             f"| Testplattform | {snap.get('tool_version')} |", ""]
     cost = (snap.get("settings") or {}).get("cost") or {}
     if cost:

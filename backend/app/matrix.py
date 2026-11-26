@@ -65,7 +65,9 @@ METRICS = [
 
     ("wm_detect_rate", "Wasserzeichen erkannt ≥200 Tok", "%", "higher", "kennzeichnung", 1, "watermark"),
     ("wm_fpr", "Fehlalarme", "%", "lower", "kennzeichnung", 1, "watermark"),
+    ("wm_detect_ci", "95%-KI Erkennung", "", None, "kennzeichnung", None, "watermark"),
     ("wm_optout_blocked", "Opt-out verhindert", "", "higher", "kennzeichnung", None, "watermark"),
+    ("wm_optout_rate", "Opt-out-Texte markiert", "%", None, "kennzeichnung", 1, "watermark"),
 ]
 # Kennzahlen, bei denen Δ % zur Referenz nichts aussagt (Differenzen, Anteile nahe 0, Mengenangaben)
 NO_DELTA = {"salt_new_tenant_extra_ms", "salt_new_tenant_hit_pct", "salt_cold_template_tokens", "salt_tenants_max",
@@ -128,8 +130,11 @@ def build(since: str | None = None, include_unfinished: bool = False) -> dict:
         key, info = _group(cfg)
         g = groups.setdefault(key, {"key": key, **info, "runs": {}, "values": {}})
         if r["test"] in g["runs"]:
-            continue  # es zählt der neueste Lauf je Test
+            continue  # es zählt der neueste gültige Lauf je Test
         summ = get_summary(rd)
+        if summ.get("invalid"):   # z. B. alle Proben vom Gateway abgewiesen → älteren gültigen Lauf nehmen
+            g.setdefault("invalid_runs", []).append(r["id"])
+            continue
         g["runs"][r["test"]] = {"id": r["id"], "started_at": r.get("started_at"), "verdict": summ.get("verdict"),
                                 "headline": summ.get("headline"), "params": cfg.get("params")}
         for k, v in (summ.get("matrix") or {}).items():
@@ -157,8 +162,8 @@ def build(since: str | None = None, include_unfinished: bool = False) -> dict:
 PERF_KEYS = ("output_tps", "ttft_p50_ms", "tpot_p50_ms", "cost_per_mtok_eur")
 COST_DELTA_KEYS = ("salt_new_tenant_ttft_ms", "salt_ttft_p50_nmax_ms", "salt_tps_nmax", "salt_cost_nmax_eur")
 SUMMARY_SECTIONS = [
-    ("Sicherheit", ("prefix_auc", "prefix_auc_dev", "prefix_d", "slowdown_sn", "jain_index", "hardening_score",
-                    "wm_detect_rate", "wm_fpr")),
+    ("Sicherheit", ("prefix_auc", "prefix_auc_dev", "prefix_d", "prefix_d_load", "slowdown_sn", "jain_index",
+                    "n_largest_accepted", "hardening_score", "wm_detect_rate", "wm_fpr", "wm_optout_blocked")),
     ("Leistung (3 Mandanten, eingeschwungen)", ("output_tps", "ttft_p50_ms", "tpot_p50_ms", "cache_hit_pct",
                                                 "cost_per_mtok_eur")),
     ("Kosten der Cache-Trennung", ("salt_new_tenant_ttft_ms", "salt_new_tenant_extra_ms", "salt_new_tenant_hit_pct",
@@ -339,9 +344,18 @@ def runs_long(since: str | None = None, scenarios: list[str] | None = None) -> l
         summ = get_summary(rd)
         out.append({"scenario": sc.get("id"), "scenario_name": sc.get("name"), "test": r["test"], "run_id": r["id"],
                     "started_at": r.get("started_at"), "verdict": summ.get("verdict"),
+                    "invalid": summ.get("invalid"),
+                    "invalid_partial": summ.get("invalid_partial"),
                     "batch_label": cfg.get("batch_label") or "", "values": derive(dict(summ.get("matrix") or {}), cost)})
     out.sort(key=lambda x: x["started_at"] or "")
     return out
+
+
+def verdict_text(r: dict) -> str:
+    """Ergebnis für Tabellen: ungültige Läufe ausdrücklich so benennen (statt eines leeren Urteils)."""
+    if r.get("invalid"):
+        return "ungültig"
+    return r.get("verdict") or ""
 
 
 def runs_csv(rows: list[dict]) -> str:
@@ -349,7 +363,7 @@ def runs_csv(rows: list[dict]) -> str:
     head = ["Szenario", "Konfiguration", "Test", "Lauf", "Start", "Ergebnis",
             *[f"{lab} [{u}]" if u else lab for _, lab, u, *_ in METRICS]]
     body = [[r["scenario"] or "", r["scenario_name"] or "", r["test"], r["run_id"], r["started_at"] or "",
-             r["verdict"] or "", *[r["values"].get(k) for k in keys]] for r in rows]
+             verdict_text(r), *[r["values"].get(k) for k in keys]] for r in rows]
     return "\n".join(";".join(_csv_cell(x) for x in row) for row in [head, *body])
 
 
@@ -379,6 +393,7 @@ def summary_md(rows: list[dict], title: str, notes: list[str] | None = None) -> 
     agg = aggregate(rows)
     scen = sorted(agg)
     names = {r["scenario"]: r["scenario_name"] for r in rows if r["scenario"]}
+    nmax = max((a.get("n", 0) for sc in scen for a in agg[sc].values()), default=0)
 
     def cell(sc, k):
         a = agg.get(sc, {}).get(k)
@@ -390,7 +405,8 @@ def summary_md(rows: list[dict], title: str, notes: list[str] | None = None) -> 
         s = num_de(a["mean"], d)          # Einheit steht im Spaltenkopf
         if a["sd"] is not None:
             s += " ± " + num_de(a["sd"], d)
-        return s + (f" (n={a['n']})" if a["n"] > 1 else "")
+        # n immer zeigen, sobald es Wiederholungen gibt – sonst fällt ein Szenario mit nur 1 gültigen Lauf nicht auf
+        return s + (f" (n={a['n']})" if a["n"] > 1 or nmax > 1 else "")
 
     def head(k):
         return M[k]["label"] + (f" [{M[k]['unit']}]" if M[k]["unit"] else "")
@@ -423,7 +439,94 @@ def summary_md(rows: list[dict], title: str, notes: list[str] | None = None) -> 
                     d = delta(M[k], a and a.get("mean"), b and b.get("mean"))
                     cells.append("Referenz" if sc == ref else (dtxt(d) if d else "–"))
                 out.append(f"| {sc} | " + " | ".join(cells) + " |")
-    out += ["", "## Läufe", "", "| Start | Szenario | Test | Ergebnis | Lauf |", "|---|---|---|---|---|"]
+    out += ["", "## Läufe", "", "| Start | Szenario | Test | Ergebnis | Lauf | Hinweis |", "|---|---|---|---|---|---|"]
     for r in rows:
-        out.append(f"| {r['started_at']} | {r['scenario'] or '–'} | {r['test']} | {r['verdict'] or '–'} | {r['run_id']} |")
+        hint = r.get("invalid") or r.get("invalid_partial") or ""
+        out.append(f"| {r['started_at']} | {r['scenario'] or '–'} | {r['test']} | {verdict_text(r) or '–'} | "
+                   f"{r['run_id']} | {hint} |")
+    return "\n".join(out) + "\n"
+
+
+# ======================================================================= LaTeX: Mittelwerte über Wiederholungen
+# (Kennzahl, Kopfzeile, zweite Kopfzeile)
+LATEX_MEAN_SECURITY = (("prefix_auc", "AUC", "ruhig"), ("prefix_d", "Cohens $d$", "ruhig"),
+                       ("prefix_d_load", "Cohens $d$", "unter Last"), ("slowdown_sn", "$S_N$", "[$\\times$]"),
+                       ("jain_index", "Jain $J$", ""), ("hardening_score", "Härtung", "bestanden"),
+                       ("wm_detect_rate", "Wasserz.", "erkannt [\\%]"))
+LATEX_MEAN_PERF = (("output_tps", "Durchsatz", "[Tok/s]"), ("ttft_p50_ms", "TTFT p50", "[ms]"),
+                   ("tpot_p50_ms", "TPOT p50", "[ms]"))
+LATEX_MEAN_DELTA = (("cost_per_mtok_eur", "$\\Delta$ Kosten", "3 Mandanten"),
+                    ("salt_new_tenant_ttft_ms", "$\\Delta$ TTFT", "neuer Mandant"),
+                    ("salt_cost_nmax_eur", "$\\Delta$ Kosten", "viele Mandanten"))
+
+
+def to_latex_mean(rows: list[dict], ref: str = "K0", now: datetime | None = None) -> str:
+    """Wie to_latex, aber Mittelwert ± Standardabweichung über ALLE gültigen Wiederholungen je Szenario.
+
+    Für die Arbeit gedacht: Die Werte stammen aus denselben Läufen wie zusammenfassung.md. Weicht die
+    Anzahl gültiger Läufe einer Zelle vom Höchstwert ab, steht sie hochgestellt dahinter.
+    """
+    M = {m[0]: {"key": m[0], "label": m[1], "unit": m[2], "better": m[3], "digits": m[5]} for m in METRICS}
+    agg = aggregate(rows)
+    scen = sorted(agg)
+    if not scen:
+        return "% keine Läufe"
+    names = {r["scenario"]: r["scenario_name"] for r in rows if r["scenario"]}
+    nmax = max((a.get("n", 0) for sc in scen for a in agg[sc].values()), default=0)
+    ref = ref if ref in agg else scen[0]
+
+    def cell(sc, k):
+        a = agg.get(sc, {}).get(k)
+        if not a:
+            return "--"
+        if "text" in a:
+            return _tex(a["text"])
+        d = M[k]["digits"] if M[k]["digits"] is not None else 2
+        s = num_de(a["mean"], d)
+        if a.get("sd") is not None:
+            s += " $\\pm$ " + num_de(a["sd"], d)
+        if a["n"] < nmax:
+            s += f"\\textsuperscript{{n={a['n']}}}"
+        return s.replace("-", "$-$", 1) if s.startswith("-") else s
+
+    def dcell(sc, k):
+        if sc == ref:
+            return "Ref."
+        a, b = agg.get(sc, {}).get(k), agg.get(ref, {}).get(k)
+        d = delta(M[k], a and a.get("mean"), b and b.get("mean"))
+        return _tex(dtxt(d)) if d else "--"
+
+    stamp = (now or datetime.now()).strftime("%d.%m.%Y, %H:%M:%S")
+    head = [f"% Erzeugt von der LLM-Inferenz-Testplattform, {stamp}: Mittelwert $\\pm$ Standardabweichung über die",
+            f"% gültigen Wiederholungen je Szenario (n = {nmax}; abweichende n hochgestellt).",
+            "% Benötigt \\usepackage{booktabs,adjustbox} – adjustbox verkleinert die Tabelle nur, wenn sie breiter als der",
+            "% Satzspiegel ist."]
+
+    def table(cols, body, caption, label):
+        spec = "ll" + "r" * len(cols)
+        head1 = "ID & Konfiguration & " + " & ".join(c[0] for c in cols) + " \\\\"
+        head2 = " & & " + " & ".join(c[1] for c in cols) + " \\\\"
+        return ["\\begin{table}[htbp]", "\\centering", "\\footnotesize", "\\setlength{\\tabcolsep}{3pt}",
+                "\\begin{adjustbox}{max width=\\textwidth}",
+                f"\\begin{{tabular}}{{{spec}}}", "\\toprule", head1,
+                *([head2] if any(c[1] for c in cols) else []), "\\midrule", *body, "\\bottomrule",
+                "\\end{tabular}", "\\end{adjustbox}",
+                f"\\caption{{{caption}}}", f"\\label{{{label}}}", "\\end{table}"]
+
+    sec_keys = [c for c in LATEX_MEAN_SECURITY if any(c[0] in agg[sc] for sc in scen)]
+    perf_keys = [c for c in LATEX_MEAN_PERF if any(c[0] in agg[sc] for sc in scen)]
+    dkeys = [c for c in LATEX_MEAN_DELTA if any(c[0] in agg[sc] for sc in scen)]
+    sec_body = [" & ".join([sc, _tex(names.get(sc) or "")] + [cell(sc, c[0]) for c in sec_keys]) + " \\\\"
+                for sc in scen]
+    perf_body = [" & ".join([sc, _tex(names.get(sc) or "")] + [cell(sc, c[0]) for c in perf_keys]
+                            + [dcell(sc, c[0]) for c in dkeys]) + " \\\\" for sc in scen]
+    out = head + table([c[1:] for c in sec_keys], sec_body,
+                       f"Sicherheit der Konfigurationen (Mittelwert $\\pm$ Standardabweichung, n = {nmax} Läufe je Szenario)",
+                       "tab:sicherheit-mittel")
+    out += [""] + table([c[1:] for c in perf_keys] + [c[1:] for c in dkeys], perf_body,
+                        f"Leistung und Kosten (Mittelwert $\\pm$ Standardabweichung; $\\Delta$ = Änderung der "
+                        f"Mittelwerte gegenüber {ref})", "tab:leistung-mittel")
+    note = cost_note()
+    if note:
+        out += ["% " + note]
     return "\n".join(out) + "\n"

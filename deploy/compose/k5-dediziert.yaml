@@ -8,7 +8,9 @@
 #
 # Braucht 2 × MODEL_GPU_MIN_MB + 400 MB VRAM (2x Gewichte + KV-Cache + Aktivierungen): mit Qwen3-8B
 # ~44 GB (RTX PRO 6000: ja), mit Qwen3-0.6B ~8 GB. Auf der 4-GB-RTX-3050 passt es NICHT.
-# --enforce-eager spart die CUDA-Graphen.
+# Engine-Optionen je Instanz: K5_ENGINE_ARGS aus dem Modellprofil. standard (Qwen3-8B): leer – jede Instanz
+# läuft genau wie K0 (gleicher KV-Cache, CUDA-Graphen), der Vergleich misst nur die Trennung.
+# klein (Qwen3-0.6B): --enforce-eager --max-num-seqs 16 als Sparbetrieb; Leistung dann nicht mit K0 vergleichbar.
 # Erwartung: Prefix-Seitenkanal GRÜN, Noisy Neighbor nur noch über die GPU-Rechenzeit sichtbar
 # (S_N > 1, aber keine Verdrängung von Cache-Blöcken), Durchsatz je Instanz deutlich kleiner.
 name: llmtb
@@ -25,7 +27,7 @@ services:
       LLMTB_SCENARIO: K5-a
       GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION_DEDICATED:-0.45}
       KV_CACHE_MEMORY: ${KV_CACHE_MEMORY_DEDICATED:-}
-      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details --enforce-eager --max-num-seqs 16"
+      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details ${K5_ENGINE_ARGS:-}"
     volumes:
       - vllm-cache-a:/root/.cache/vllm
     networks: [backend]
@@ -36,7 +38,7 @@ services:
       LLMTB_SCENARIO: K5-b
       GPU_MEMORY_UTILIZATION: ${GPU_MEMORY_UTILIZATION_DEDICATED:-0.45}
       KV_CACHE_MEMORY: ${KV_CACHE_MEMORY_DEDICATED:-}
-      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details --enforce-eager --max-num-seqs 16"
+      VLLM_SCENARIO_ARGS: "--enable-prompt-tokens-details ${K5_ENGINE_ARGS:-}"
     volumes:
       - vllm-cache-b:/root/.cache/vllm
     # nacheinander starten: vLLM misst beim Start den freien GPU-Speicher

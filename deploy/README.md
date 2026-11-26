@@ -62,7 +62,7 @@ Jedes Szenario = K0 + genau die genannte(n) Maßnahme(n) (Ablationsstudie). K4 k
 | **K2** | `k2-ohne-prefix-cache.yaml` | `--disable-prefix-caching` | wie K1 + Cache-Kollisionen | Seitenkanal **grün**, TTFT deutlich schlechter |
 | **K3** | `k3-ratenlimit.yaml` | je Mandant max. 8 parallel / 600 pro min, n ≤ 16 im Gateway, `VLLM_MAX_N_SEQUENCES=64` | Ressourcenverdrängung (CVE-2026-34756) | S_N kleiner, Jain-Index höher, 429 für den Störnachbarn |
 | **K4** | `k4-gehaertet.yaml` | alles: K1 + K3 + Netztrennung, Engine-API-Key, Routen-Allowlist, kein `cached_tokens`, Feature-Flags aus, Wasserzeichen, Container-Härtung | alle Engine-Angriffe (Fokus „ja“) | alle Sicherheitstests **grün** |
-| **K5** | `k5-dediziert.yaml` | dedizierte vLLM-Instanz je Mandant auf derselben GPU | Seitenkanal, Absturz trifft nur eigene Instanz | Seitenkanal grün, S_N > 1 nur über GPU-Rechenzeit. **Braucht ≥ 44 GB VRAM mit Qwen3-8B** (≥ 8 GB mit Qwen3-0.6B) |
+| **K5** | `k5-dediziert.yaml` | dedizierte vLLM-Instanz je Mandant auf derselben GPU; mit Qwen3-8B jede Instanz genau wie K0 (KV-Cache, CUDA-Graphen) | Seitenkanal, Absturz trifft nur eigene Instanz | Seitenkanal grün, S_N > 1 nur über GPU-Rechenzeit. **Braucht ≥ 44 GB VRAM mit Qwen3-8B** (≥ 8 GB mit Qwen3-0.6B, dann Sparbetrieb `--enforce-eager` – Leistung nicht mit K0 vergleichbar) |
 | **K6** | `k6-wasserzeichen.yaml` | Gumbel-Wasserzeichen (`enforce=true`) + Detektor | KI-VO Art. 50 Abs. 2 | Erkennung ab 200 Tokens, Leistungskosten K6 vs. K0 |
 
 ### K4 im Detail (Best Practices aus der vLLM-Doku)
@@ -94,7 +94,8 @@ Jedes Szenario = K0 + genau die genannte(n) Maßnahme(n) (Ablationsstudie). K4 k
   `standard` = `Qwen/Qwen3-8B` ab ~44 GB VRAM (alle Szenarien einschließlich K5), `klein` = `Qwen/Qwen3-0.6B`
   für den Laptop. Beide nutzen denselben Tokenizer – die Prompts sind Token für Token gleich.
 - **Feste KV-Cache-Größe** in allen Szenarien, je Profil so gewählt, dass sie ≈ 6 540 Tokens fasst
-  (`KV_CACHE_MEMORY`: Qwen3-8B 965 MB, Qwen3-0.6B 750 MB; K5 je Instanz ≈ 4 360 Tokens) – sonst hinge die
+  (`KV_CACHE_MEMORY`: Qwen3-8B 965 MB, Qwen3-0.6B 750 MB; K5 je Instanz mit Qwen3-8B ebenso, mit Qwen3-0.6B
+  ≈ 4 360 Tokens) – sonst hinge die
   Kapazität davon ab, was gerade an GPU-Speicher frei ist. Die tatsächliche Größe steht nach jedem
   Gesamtlauf in `szenario-konfiguration.md`.
 - vLLM 0.34 nutzt standardmäßig **64 Tokens je KV-Block** (`CacheConfig.DEFAULT_BLOCK_SIZE`), nicht 16 wie im

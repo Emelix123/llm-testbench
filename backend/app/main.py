@@ -129,9 +129,13 @@ BUILTIN_SUITES = [
     {"id": "dauerlast", "name": "Dauerlast", "duration": "1–4 h",
      "items": [{"test": "endurance"}, {"test": "spike"}, {"test": "overload"}], "builtin": True,
      "note": "Nutzt die Kapazität aus dem letzten Kapazitäts-Sweep dieses Endpunkts."},
-    {"id": "konfigurationsvergleich", "name": "Konfigurationsvergleich (je Szenario)", "duration": "ca. 17–20 min",
-     "items": [{"test": "hardening_check"}, {"test": "prefix_cache_leak"}, {"test": "isolation_overhead"},
-               {"test": "salt_cost"}, {"test": "watermark"}, {"test": "resource_contention"}], "builtin": True,
+    {"id": "konfigurationsvergleich", "name": "Konfigurationsvergleich (je Szenario)", "duration": "ca. 20–28 min",
+     # Seitenkanal zusätzlich unter Last (Cohens d unter Last, Vergleich mit der Literatur): 4 parallele Anfragen
+     # eines dritten Mandanten mit je 128 Output-Tokens – ~150 Anfragen/min, bleibt unter den Grenzen von K3/K4.
+     "items": [{"test": "hardening_check"},
+               {"test": "prefix_cache_leak", "params": {"background_load": 4, "background_output_tokens": 128}},
+               {"test": "isolation_overhead"}, {"test": "salt_cost"}, {"test": "watermark"},
+               {"test": "resource_contention"}], "builtin": True,
      "note": "Einmal je Szenario K0–K6 – am einfachsten als Gesamtlauf auf der Seite „Steuerung“. Ergebnis: Seite "
              "„Konfigurationen“. Wasserzeichen braucht den Detektor (K4/K6 oder Detektor auf der Seite „Steuerung“)."},
     {"id": "abnahme", "name": "Abnahme", "duration": "mehrere Stunden",
@@ -582,6 +586,15 @@ def get_settings():
 @app.put("/api/settings")
 async def put_settings(req: Request):
     return storage.save_settings(await req.json())
+
+
+@app.get("/api/code-stand")
+def code_stand():
+    """Läuft die Testplattform mit dem Code, der auf der Platte liegt? (run-all startet sie sonst neu.)"""
+    from . import environment
+    return {**environment.code_state(),
+            "busy": bool((manager.current and manager.current.state == "laeuft")
+                         or (gl.current and gl.current.state == "laeuft") or ops.busy())}
 
 
 @app.get("/api/status")

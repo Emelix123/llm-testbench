@@ -62,7 +62,13 @@
     },
     {
       "key": "background_load",
-      "label": "Last anderer Mandanten (parallele Anfragen, 0 = ruhig; >0 misst zusätzlich unter Last)",
+      "label": "Last anderer Mandanten (parallele Anfragen, 0 = ruhig; >0 misst zusätzlich unter Last → Cohens d unter Last)",
+      "type": "int",
+      "default": 0
+    },
+    {
+      "key": "background_output_tokens",
+      "label": "Output-Tokens je Last-Anfrage (0 = nur Prefill; >0 = Decode-Last mit niedriger Anfragerate, bleibt unter Gateway-Grenzen)",
       "type": "int",
       "default": 0
     },
