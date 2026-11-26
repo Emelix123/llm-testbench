@@ -470,14 +470,26 @@ start_bench() {
 # Module beim Start geladen – sie würde mit dem alten Stand messen, während Commit und Code-Hash im
 # Export den neuen dokumentieren. Vor einem neuen Gesamtlauf darum neu starten (nur wenn sie frei ist).
 restart_if_stale() {
-  local cs st
+  local cs st state
   cs=$(curl -sf "$BENCH/api/code-stand" 2>/dev/null || true)
-  if [[ -n "$cs" ]] && python3 -c 'import json,sys; sys.exit(1 if json.load(sys.stdin).get("stale") else 0)' <<< "$cs"; then
-    return 0   # aktueller Code
-  fi
-  # kein Endpunkt = Testplattform älter als diese Prüfung → ebenfalls veraltet
+  # Eine Testplattform, die älter ist als diese Prüfung, kennt /api/code-stand nicht und antwortet mit der
+  # Weboberfläche (HTML) – das gilt ebenfalls als veraltet. Darum nie ungeprüft als JSON lesen.
+  state=$(python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    print("unbekannt"); sys.exit(0)
+print("veraltet" if d.get("stale") else "aktuell")' <<< "$cs" 2>/dev/null || echo unbekannt)
+  [[ "$state" == aktuell ]] && return 0
   st=$(curl -sf "$BENCH/api/status" 2>/dev/null || true)
-  if python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("running") or d.get("gesamtlauf")=="laeuft" or d.get("ops_busy") else 1)' <<< "$st" 2>/dev/null; then
+  if python3 -c '
+import json, sys
+try:
+    d = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(1)
+sys.exit(0 if d.get("running") or d.get("gesamtlauf") == "laeuft" or d.get("ops_busy") else 1)' <<< "$st" 2>/dev/null; then
     die "Die Testplattform läuft mit älterem Code und ist gerade beschäftigt – erst nach dem Ende neu starten (./start.sh --stopp)."
   fi
   echo "Die Testplattform läuft noch mit älterem Code als auf der Platte (z. B. nach git pull) – starte sie neu,"
