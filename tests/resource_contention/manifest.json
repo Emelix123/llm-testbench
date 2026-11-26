@@ -114,15 +114,24 @@
     },
     {
       "key": "n_ladder",
-      "label": "n-Grenze: geprüfte Werte (17 → Gateway 16, 65 → VLLM_MAX_N_SEQUENCES 64, 129 → Empfehlung 128)",
+      "label": "n-Grenze: geprüfte Werte – jeweils letzter erlaubter und erster verbotener Wert (16/17 → Gateway 16, 64/65 → VLLM_MAX_N_SEQUENCES 64, 128/129 → Empfehlung 128)",
       "type": "int_list",
       "default": [
         2,
+        16,
         17,
+        64,
         65,
+        128,
         129,
         1024
       ]
+    },
+    {
+      "key": "cooldown_s",
+      "label": "Abklingzeit nach dem Angriff, falls das Gateway den Störnachbarn abgewiesen hat (s; 0 = aus). Verhindert, dass der nächste Test gegen ein erschöpftes Kontingent misst.",
+      "type": "int",
+      "default": 65
     },
     {
       "key": "seed",

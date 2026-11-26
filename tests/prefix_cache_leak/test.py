@@ -93,6 +93,10 @@ def _body(ctx, text: str, salt: str | None):
     return body
 
 
+# Höchstens so viele Proben einer Messphase dürfen fehlschlagen (429, 5xx, Abbruch) – sonst ist der Lauf ungültig.
+MAX_FAILED_SHARE = 0.05
+
+
 def estimate(params):
     main = params["trials"] * 4 * (1 + (1 if params["background_load"] else 0))
     sweep = len(params["sweep_tokens"]) * params["sweep_trials"] * 2 if params["granularity_sweep"] else 0
@@ -136,14 +140,26 @@ async def _measure_pair(ctx, trial: int, phase: str):
 
 
 async def _background(ctx, concurrency: int, stop: asyncio.Event):
-    """Last eines dritten Mandanten mit eindeutigen Prompts (stört, misst aber nicht)."""
+    """Last eines dritten Mandanten mit eindeutigen Prompts (stört, misst aber nicht).
+
+    background_output_tokens > 0: jede Anfrage erzeugt so viele Tokens (Decode-Last wie bei chattenden
+    Mandanten). Das hält die Anfragerate niedrig – so bleibt die Last auch unter Gateway-Grenzen je
+    Mandant (K3/K4: 600/min, 8 parallel) in allen Szenarien gleich und verbraucht kein Kontingent, das
+    der nächste Test braucht. 0 = wie bisher nur Prefill (probe_tokens).
+    """
+    out_tok = int(ctx.params.get("background_output_tokens") or 0)
+
     async def worker(i):
         wr = random.Random(ctx.rng.getrandbits(64))
         while not stop.is_set() and not ctx.cancelled:
             text, _ = _blocktext(ctx, wr, max(256, ctx.params["prefix_tokens"]))
             bsalt = None if ctx.params["salt_mode"] == "none" else f"last-{i}"
-            await ctx.send(_body(ctx, text + f" {wr.getrandbits(48):x}", bsalt),
-                           {"stage": "bg"}, tenant=_roles(ctx)[2])
+            body = _body(ctx, text + f" {wr.getrandbits(48):x}", bsalt)
+            if out_tok > 0:
+                body.update({k: v for k, v in ctx.chat_body("", out_tok).items() if k != "messages"})
+            r = await ctx.send(body, {"stage": "bg"}, tenant=_roles(ctx)[2])
+            if r.status in (429, 503):   # abgewiesen: nicht in schneller Schleife nachschieben
+                await asyncio.sleep(1.0)
     await asyncio.gather(*(worker(i) for i in range(concurrency)))
 
 
@@ -265,14 +281,49 @@ def _phase_metrics(recs, phase):
     return out
 
 
+def _failures(recs, phase: str) -> tuple[int, int, dict]:
+    """(Proben gesamt, fehlgeschlagen, HTTP-Status der Fehlschläge) einer Messphase."""
+    main = [r for r in recs if r.get("stage") == "main" and r.get("phase") == phase]
+    bad = [r for r in main if not stats.is_ok(r)]
+    codes: dict = {}
+    for r in bad:
+        k = str(r.get("status") or r.get("error_class") or "Fehler")
+        codes[k] = codes.get(k, 0) + 1
+    return len(main), len(bad), codes
+
+
+def _fail_text(n: int, bad: int, codes: dict) -> str:
+    c = ", ".join(f"{k}: {v}" for k, v in sorted(codes.items(), key=lambda x: -x[1]))
+    hint = (" – das Gateway-Kontingent eines Mandanten war erschöpft (z. B. durch einen vorherigen Test)"
+            if "429" in codes else "")
+    return f"{bad} von {n} Proben fehlgeschlagen ({c}){hint}"
+
+
 def summarize(recs, stages, cfg, settings):
     p = cfg["params"]
     quiet = _phase_metrics(recs, "quiet")
     load = _phase_metrics(recs, "load") if p["background_load"] else None
 
-    if "auc" not in quiet:
-        return {"verdict": "rot", "headline": "Keine auswertbaren Messungen – lief der Endpunkt?",
-                "kpis": {}, "charts": [], "tables": []}
+    # Gültigkeit: Ein Lauf, in dem Proben abgewiesen wurden, misst nicht den Cache, sondern das Gateway.
+    # Er bekommt kein Urteil und keine Kennzahlen (fehlt damit in Mittelwerten und Tabellen) statt „rot“.
+    n_q, bad_q, codes_q = _failures(recs, "quiet")
+    if "auc" not in quiet or n_q == 0 or bad_q > MAX_FAILED_SHARE * n_q:
+        why = _fail_text(n_q, bad_q, codes_q) if n_q else "keine Proben aufgezeichnet"
+        return {"verdict": None, "invalid": why,
+                "headline": f"UNGÜLTIG – keine verwertbare Messung: {why}. Lauf wiederholen.",
+                "kpis": {}, "matrix": {}, "charts": [], "tables": [
+                    {"title": "Fehlgeschlagene Proben", "columns": ["Phase", "Proben", "fehlgeschlagen", "HTTP-Status"],
+                     "rows": [["ruhig", n_q, bad_q, ", ".join(f"{k}: {v}" for k, v in codes_q.items()) or "–"]]}]}
+    load_invalid = None
+    if load is not None:
+        n_l, bad_l, codes_l = _failures(recs, "load")
+        if "auc" not in load or n_l == 0 or bad_l > MAX_FAILED_SHARE * n_l:
+            load_invalid = _fail_text(n_l, bad_l, codes_l) if n_l else "keine Proben aufgezeichnet"
+            load = None
+    bg = [r for r in recs if r.get("stage") == "bg"]
+    bg_rejected = sum(1 for r in bg if r.get("status") in (429, 503))
+    bg_note = (f"Hintergrundlast teilweise abgewiesen ({bg_rejected} von {len(bg)} Anfragen) – die Last war "
+               "kleiner als eingestellt." if bg and bg_rejected > 0.1 * len(bg) else None)
 
     auc = quiet["auc"]
     ci = quiet.get("auc_ci")
@@ -324,8 +375,12 @@ def summarize(recs, stages, cfg, settings):
         head = (f"NICHT VERWUNDBAR {salt_txt}: AUC {stats.fmt_num(auc, 2)}{ci_txt} – das Konfidenzintervall "
                 "schließt 0,5 (Raten) ein. Treffer und Fehlschläge sind an der Antwortzeit nicht zu unterscheiden.")
     if load:
-        head += (f" Unter Last anderer Mandanten sinkt Cohens d von {stats.fmt_num(quiet['d'], 2)} "
-                 f"auf {stats.fmt_num(load.get('d'), 2)} (AUC {stats.fmt_num(load.get('auc'), 2)}).")
+        head += (f" Unter Last anderer Mandanten: Cohens d {stats.fmt_num(quiet['d'], 2)} → "
+                 f"{stats.fmt_num(load.get('d'), 2)} (AUC {stats.fmt_num(load.get('auc'), 2)}).")
+    if load_invalid:
+        head += f" Messung unter Last ungültig: {load_invalid}."
+    if bg_note:
+        head += " " + bg_note
 
     # --- Methoden- und Ergebnistabelle
     def mrow(label, m):
@@ -348,7 +403,10 @@ def summarize(recs, stages, cfg, settings):
                          ["Mandanten", "getrennte API-Keys (Gateway-Trennung geprüft)" if separate
                           else "ein Key (nur client-seitig simuliert)"],
                          ["Opfer-Präfix", f"{stats.fmt_num(p['prefix_tokens'])} Tokens"],
-                         ["Last anderer Mandanten", "keine" if not p["background_load"] else f"{p['background_load']} parallele Anfragen"],
+                         ["Last anderer Mandanten", "keine" if not p["background_load"] else
+                          f"{p['background_load']} parallele Anfragen"
+                          + (f" mit je {p.get('background_output_tokens')} Output-Tokens"
+                             if p.get("background_output_tokens") else " (nur Prefill)")],
                          ["Messungen je Bedingung", stats.fmt_num(p["trials"])],
                          ["cached_tokens geliefert", "ja" if quiet.get("cached_available") else "nein"],
                      ]}
@@ -408,6 +466,7 @@ def summarize(recs, stages, cfg, settings):
                                 "unit": "AUC (0,5 = Raten, 1,0 = perfekt lesbar)",
                                 "text": (f"95%-KI {stats.fmt_num(ci[0], 2)}–{stats.fmt_num(ci[1], 2)}" if ci else "")
                                         + (", cached_tokens-Leck" if leak else "")}},
+        **({"invalid_partial": f"unter Last: {load_invalid}"} if load_invalid else {}),
         "matrix": {"prefix_auc": round(auc, 3),
                    "prefix_auc_ci": f"{stats.fmt_num(ci[0], 2)}–{stats.fmt_num(ci[1], 2)}" if ci else None,
                    "prefix_auc_dev": round(auc_dev, 3),

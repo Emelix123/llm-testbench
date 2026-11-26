@@ -74,14 +74,15 @@ meisten Speicher (bei Gleichstand die ohne Monitor); ändern mit `./deploy/scena
 [`docs/SERVER.md`](docs/SERVER.md#mehrere-gpus).
 
 Am einfachsten über die Weboberfläche: **Steuerung → Gesamtlauf**. Er startet jedes gewählte Szenario,
-misst die Suite **„Konfigurationsvergleich (je Szenario)“** (Härtung, Prefix-Cache-Seitenkanal,
-Leistungskosten der Isolation, Kosten der Cache-Trennung, Wasserzeichen, Ressourcenverdrängung) so oft
-wie angegeben, stoppt am Ende und schreibt nach `data/exports/<Datum>/`:
+misst die Suite **„Konfigurationsvergleich (je Szenario)“** (Härtung, Prefix-Cache-Seitenkanal ruhig und
+unter Last, Leistungskosten der Isolation, Kosten der Cache-Trennung, Wasserzeichen, Ressourcenverdrängung) so
+oft wie angegeben, stoppt am Ende und schreibt nach `data/exports/<Datum>/`:
 
 | Datei | Inhalt |
 |---|---|
 | `zusammenfassung.md` | Sicherheit, Leistung und Kosten der Cache-Trennung je Szenario als Mittelwert ± Standardabweichung über die Wiederholungen, Δ % zu K0, Kostenannahme, Liste aller Läufe |
-| `konfigurationsvergleich.tex` | zwei LaTeX-Tabellen (booktabs, passen auf A4): Sicherheit/Leistung und Kosten der Cache-Trennung – neuester Lauf je Szenario |
+| `konfigurationsvergleich-mittel.tex` | **für die Arbeit:** zwei LaTeX-Tabellen (booktabs, adjustbox) mit Mittelwert ± Standardabweichung über alle gültigen Wiederholungen – Sicherheit (AUC, Cohens d ruhig/unter Last, S_N, Jain, Härtung, Wasserzeichen) sowie Leistung und Kosten (Δ zu K0) |
+| `konfigurationsvergleich.tex` | zwei LaTeX-Tabellen (booktabs, passen auf A4): Sicherheit/Leistung und Kosten der Cache-Trennung – neuester gültiger Lauf je Szenario |
 | `konfigurationsvergleich.csv` | dieselbe Tabelle für Excel/LibreOffice (Semikolon, Dezimalkomma) |
 | `laeufe.csv` | jeder einzelne Lauf mit allen Kennzahlen |
 | `umgebung.md` / `umgebung.json` | Messumgebung vor dem ersten Szenario: GPU (Speicher, Compute Capability, Treiber, CUDA, Leistungsgrenze, Belegung beim Start), CPU, RAM, Betriebssystem, Docker, Image-Digests, Modell-/KV-Cache-Werte aus `deploy/.env` (ohne Geheimnisse), Git-Commit mit lokalen Änderungen, Code-Hash, Kostenannahmen |
@@ -90,7 +91,18 @@ wie angegeben, stoppt am Ende und schreibt nach `data/exports/<Datum>/`:
 | `container-logs.zip` | vollständige Logs aller Container je Szenario, gesichert nach der Messung und vor dem Stoppen; Keys, Passwörter und der Wasserzeichen-Schlüssel sind geschwärzt |
 
 Die Zusammenfassung warnt außerdem, wenn sich der Code während des Gesamtlaufs geändert hat (verschiedene
-Code-Hashes), wenn beim Start nicht eingecheckte Änderungen vorlagen oder fremde Prozesse die GPU belegten.
+Code-Hashes), wenn beim Start nicht eingecheckte Änderungen vorlagen, die Testplattform mit älterem Code lief
+oder fremde Prozesse die GPU belegten.
+
+**Ungültige Läufe:** Wurden in einem Seitenkanal-Lauf mehr als 5 % der Proben abgewiesen (z. B. `429`, weil das
+Gateway-Kontingent eines Mandanten erschöpft war), misst er das Gateway statt des Caches. Er bekommt dann kein
+Urteil („ungültig“ mit Begründung statt „rot“), keine Kennzahlen und fehlt in Mittelwerten und Tabellen (n
+kleiner, steht dabei). Damit das nicht passiert, wartet der Noisy-Neighbor-Test nach dem Angriff, bis das
+Gateway den Störnachbarn wieder annimmt (Abklingzeit, Parameter `cooldown_s`, nur wenn er abgewiesen wurde).
+
+**Code-Stand:** `run-all` prüft vor dem Start, ob die laufende Testplattform den Code von der Platte nutzt, und
+startet sie sonst neu (z. B. nach `git pull`). Außerdem bricht es ab, wenn `deploy/.env` vom Modellprofil
+abweicht (dann `./deploy/scenario.sh modell <profil>`).
 
 Die Seite **Konfigurationen** zeigt Sicherheit und Leistung aller Szenarien nebeneinander (Δ % zur
 Referenz, Diagramme) und exportiert dieselbe Tabelle. Das laufende Szenario erkennt die Testplattform

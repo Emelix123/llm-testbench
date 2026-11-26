@@ -93,6 +93,18 @@ Ohne Zutun, für die Beschreibung des Versuchsaufbaus in der Arbeit:
 Empfehlung: vor dem Gesamtlauf alles committen (`git status` sauber) und den Code bis zum Ende nicht ändern –
 die Zusammenfassung warnt sonst.
 
+## Nach einem Update (`git pull`)
+
+```bash
+git pull
+./deploy/scenario.sh run-all -n 3
+```
+
+`run-all` startet eine Testplattform, die noch mit dem alten Code läuft, selbst neu (läuft sie im Vordergrund
+in einem Terminal, dort mit Strg+C beenden). Haben sich Modellprofile geändert, bricht `run-all` mit der
+Liste der Abweichungen ab – dann einmal `./deploy/scenario.sh modell standard` (bei gestopptem Szenario) und
+erneut starten.
+
 ## Dauer
 
 | Schritt | Dauer |

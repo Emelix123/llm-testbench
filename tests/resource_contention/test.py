@@ -66,13 +66,17 @@ async def _victim_phase(ctx, phase: str, duration: float, prog_a: float, prog_b:
     await asyncio.gather(*(worker(i) for i in range(max(1, p["victim_concurrency"]))))
 
 
-async def _noisy(ctx, stop: asyncio.Event, phase: str = "attack"):
-    """Störnachbar: belegt Ressourcen bis stop gesetzt ist."""
+async def _noisy(ctx, stop: asyncio.Event, phase: str = "attack", box: dict | None = None):
+    """Störnachbar: belegt Ressourcen bis stop gesetzt ist. box["rate_limited"] zählt 429 vom Gateway."""
     p = ctx.params
     mode = p["attack_mode"]
     ta = _roles(ctx)[1]
+    box = box if box is not None else {}
+    box.setdefault("rate_limited", 0)
 
-    async def backoff(rejected: bool):
+    async def backoff(rejected: bool, status=None):
+        if status == 429:
+            box["rate_limited"] += 1
         # Abgewiesene Anfragen (429 vom Gateway) nicht in einer Endlosschleife wiederholen
         if rejected:
             await asyncio.sleep(0.2)
@@ -82,14 +86,14 @@ async def _noisy(ctx, stop: asyncio.Event, phase: str = "attack"):
         while not stop.is_set() and not ctx.cancelled:
             r = await ctx.send(ctx.chat_body(ctx.factory.make(1000, wr, unique=True), 300),
                                {"stage": "attacker", "mode": "flood", "phase": phase}, tenant=ta)
-            await backoff(r.status in (429, 503))
+            await backoff(r.status in (429, 503), r.status)
 
     async def long(i):
         wr = random.Random(ctx.rng.getrandbits(64))
         while not stop.is_set() and not ctx.cancelled:
             r = await ctx.send(ctx.chat_body(ctx.factory.make(1000, wr, unique=True), p["attack_output_tokens"]),
                                {"stage": "attacker", "mode": "long", "phase": phase}, tenant=ta)
-            await backoff(r.status in (429, 503))
+            await backoff(r.status in (429, 503), r.status)
 
     async def big_n(i):
         wr = random.Random(ctx.rng.getrandbits(64))
@@ -98,7 +102,7 @@ async def _noisy(ctx, stop: asyncio.Event, phase: str = "attack"):
             body["n"] = p["attack_n"]
             body["temperature"] = 0.9
             r = await ctx.once(body, {"stage": "attacker", "mode": "big_n", "phase": phase}, record=True, tenant=ta)
-            await backoff(r["status"] != 200)
+            await backoff(r["status"] != 200, r["status"])
 
     conc = max(1, p["attack_concurrency"])
     if mode == "flood":
@@ -116,7 +120,7 @@ async def _n_cap_probe(ctx):
     """Prüft, bis zu welchem n der Server annimmt (ohne Mandantengrenze offen)."""
     # Bewusst keine 16384/100000 mehr: Ein ungebremstes riesiges n kann die Engine (genau die CVE)
     # zum Absturz bringen – die Leiter zeigt die Grenze auch so (über n_ladder anpassbar).
-    ladder = sorted({int(x) for x in (ctx.params.get("n_ladder") or [2, 17, 65, 129, 1024]) if int(x) > 0})
+    ladder = sorted({int(x) for x in (ctx.params.get("n_ladder") or [2, 16, 17, 64, 65, 128, 129, 1024]) if int(x) > 0})
     largest_ok, reject_at, reject_msg = None, None, None
     for n in ladder:
         body = ctx.chat_body("Sag kurz Hallo.", 4, force=False)
@@ -134,6 +138,45 @@ async def _n_cap_probe(ctx):
                                  "attack_n": int(ctx.params["attack_n"])}
 
 
+async def _cooldown(ctx, tenant: str, rate_limited: int) -> None:
+    """Nach dem Angriff warten, bis das Gateway den Störnachbarn wieder annimmt.
+
+    Mit Grenzen je Mandant (K3/K4: 600 Anfragen/min) hat die Flutung das Kontingent des Angreifer-Keys
+    aufgebraucht. Ohne Pause startet der nächste Test (in der Suite: Härtungsprüfung und Seitenkanal der
+    nächsten Wiederholung) mit demselben Key – alle seine Anfragen bekommen 429, und der Test misst das
+    Gateway statt seines eigentlichen Ziels. Darum: mindestens cooldown_s warten (ein Minutenfenster plus
+    Puffer), dann mit einer Mini-Anfrage prüfen, ob der Key wieder angenommen wird (höchstens 2 min länger).
+    """
+    min_s = float(ctx.params.get("cooldown_s", 65) or 0)
+    if min_s <= 0 or ctx.cancelled:
+        return
+    t0 = time.monotonic()
+    ctx.progress(0.99, f"Abklingzeit: Gateway hat den Störnachbarn {rate_limited}× abgewiesen – warte, "
+                       "bis sein Kontingent wieder frei ist")
+    while time.monotonic() - t0 < min_s and not ctx.cancelled:
+        await asyncio.sleep(1)
+    free, probes = False, 0
+    while not ctx.cancelled:
+        r = await ctx.send(ctx.chat_body("Sag kurz Hallo.", 1, force=False), {"stage": "cooldown_probe"},
+                           record=False, tenant=tenant)
+        probes += 1
+        if r.status == 200:
+            free = True
+            break
+        if time.monotonic() - t0 > min_s + 120:
+            break
+        await asyncio.sleep(10)
+    waited = round(time.monotonic() - t0)
+    ctx.extra_config["cooldown"] = {"rate_limited": rate_limited, "waited_s": waited, "probes": probes,
+                                    "key_free_again": free}
+    if free:
+        ctx.note(f"Abklingzeit {waited} s: Das Gateway hatte den Störnachbarn {rate_limited}× abgewiesen; "
+                 "erst danach geht es weiter, damit der nächste Test nicht gegen ein erschöpftes Kontingent misst.")
+    elif not ctx.cancelled:
+        ctx.note(f"Achtung: Der Angreifer-Key wird auch nach {waited} s noch abgewiesen – der nächste Test kann "
+                 "betroffen sein (seine Läufe werden dann als ungültig markiert).")
+
+
 async def _evict_measure(ctx, when: str, text: str):
     """Misst die TTFT des (zuvor gecachten) Opfer-Präfixes – ohne ihn neu zu primen."""
     r = await ctx.send(ctx.chat_body(text, 1, force=False), {"stage": "evict", "when": when},
@@ -149,6 +192,7 @@ async def run(ctx):
                                   "victim_concurrency": p["victim_concurrency"],
                                   "tenant_mode": "keys" if ta != tv else "single"}
     phases = ctx.extra_config.setdefault("phases", {})
+    box = {"rate_limited": 0}   # 429 des Gateways an den Störnachbarn (→ Abklingzeit am Ende)
     if p.get("tenant_mode", "keys") == "keys" and ta == tv:
         ctx.note("Das Profil hat keinen Angreifer-Key – Opfer und Störnachbar teilen einen Key. "
                  "Grenzen je Mandant (LiteLLM) treffen dann beide; der Test misst so nur die Engine.")
@@ -181,7 +225,7 @@ async def run(ctx):
         ctx.progress(0.37, "Störnachbar allein")
         stop = asyncio.Event()
         t = _now_ms(ctx)
-        atk = asyncio.create_task(_noisy(ctx, stop, phase="alone"))
+        atk = asyncio.create_task(_noisy(ctx, stop, phase="alone", box=box))
         await asyncio.sleep(p.get("attacker_alone_s", 20))
         stop.set()
         phases["alone"] = [t, _now_ms(ctx)]
@@ -192,7 +236,7 @@ async def run(ctx):
     if ctx.cancelled:
         return
     stop = asyncio.Event()
-    atk = asyncio.create_task(_noisy(ctx, stop, phase="attack"))
+    atk = asyncio.create_task(_noisy(ctx, stop, phase="attack", box=box))
     try:
         await asyncio.sleep(min(6, max(2, p["attack_s"] * 0.15)))  # Störnachbar füllt den Cache
         if p["eviction_test"] and not ctx.cancelled:
@@ -203,6 +247,8 @@ async def run(ctx):
     finally:
         stop.set()
         await atk
+    if box["rate_limited"]:
+        await _cooldown(ctx, ta, box["rate_limited"])
     ctx.progress(1.0, "fertig")
 
 

@@ -22,7 +22,7 @@ SECRETS = DATA / "secrets.env"
 SETTINGS = DATA / "settings.json"
 TOKENIZER_CACHE = DATA / "tokenizers"
 
-TOOL_VERSION = "1.1.0"
+TOOL_VERSION = "1.2.0"
 # Von deploy/scenario.sh geschrieben: welches Szenario (K0–K6) lokal gerade läuft.
 SCENARIO_FILE = Path(os.environ.get("LLMTB_SCENARIO_FILE", ROOT / "deploy" / ".active-scenario.json"))
 

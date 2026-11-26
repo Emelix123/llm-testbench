@@ -357,6 +357,17 @@ def bootstrap_auc_ci(pos: list[float], neg: list[float], level: float = 95.0,
     return (round(lo, 3), round(hi, 3))
 
 
+def wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float] | None:
+    """95%-Konfidenzintervall eines Anteils k/n nach Wilson (auch bei kleinen n und Anteilen nahe 0/1 brauchbar)."""
+    if n <= 0:
+        return None
+    p = k / n
+    den = 1 + z * z / n
+    mid = (p + z * z / (2 * n)) / den
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
+    return (round(max(0.0, mid - half), 4), round(min(1.0, mid + half), 4))
+
+
 def jain_index(values: list[float]) -> float | None:
     """Jain-Fairness-Index J = (Σx)² / (n·Σx²) (Jain, Chiu, Hawe 1984).
 
